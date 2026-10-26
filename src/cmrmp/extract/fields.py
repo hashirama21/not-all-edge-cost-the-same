@@ -221,6 +221,41 @@ def label_values(text: str) -> dict[str, str]:
     return out
 
 
+_COL_NAME = re.compile(r"soumissionnaire|entreprise|raison\s+sociale|candidat|bidder|nom", re.I)
+_COL_AMOUNT = re.compile(r"montant|offre\s+financi|prix|ttc|htva|amount", re.I)
+_COL_RANK = re.compile(r"rang|classement|rank", re.I)
+_COL_STATUS = re.compile(r"observations?|recevab|conform|d[ée]cision|statut", re.I)
+
+
+def bids_from_tables(tables: list[dict]) -> list[dict]:
+    """Soumissions lues dans les tableaux PyMuPDF d'un PV (sans LLM).
+
+    Une table est retenue si l'en-tête a une colonne de nom et une colonne de montant.
+    """
+    out = []
+    for t in tables:
+        header = [str(h or "") for h in t.get("header") or []]
+        rows = t.get("rows") or []
+        if not header or not any(_COL_NAME.search(h) for h in header):
+            header, rows = (rows[0], rows[1:]) if rows else ([], [])
+        idx = lambda rx: next((i for i, h in enumerate(header) if rx.search(str(h or ""))), None)
+        i_name, i_amount, i_rank, i_status = idx(_COL_NAME), idx(_COL_AMOUNT), idx(_COL_RANK), idx(_COL_STATUS)
+        if i_name is None or i_amount is None:
+            continue
+        for r in rows:
+            if len(r) <= max(i_name, i_amount) or not r[i_name] or r[i_name] == header[i_name]:
+                continue
+            status = r[i_status] if i_status is not None and i_status < len(r) else ""
+            rank = re.sub(r"\D", "", r[i_rank]) if i_rank is not None and i_rank < len(r) else ""
+            out.append({
+                "page": t.get("page"), "soumissionnaire": re.sub(r"\s+", " ", r[i_name]).strip(),
+                "montant_offre_fcfa": parse_fcfa(r[i_amount]), "rang": int(rank) if rank else None,
+                "observation": status or None,
+                "recevable": None if not status else not re.search(r"non\s+(?:recevable|conforme)|rejet|[ée]limin", status, re.I),
+            })
+    return out
+
+
 def avis_fields(text: str) -> dict:
     ref = reference(text)
     return {

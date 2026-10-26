@@ -63,7 +63,7 @@ cmrmp crawl minmap
 cp data/sitemaps/coleps.json config/sitemaps/coleps.json            # carte relue, versionnée
 cmrmp crawl coleps
 cmrmp crawl documents          # PDF/DOCX mis en file par les collecteurs
-cmrmp extract --llm            # texte + regex + extraction structurée par Claude (cache par SHA-256)
+cmrmp extract --llm            # PyMuPDF (texte, OCR, tableaux) + regex + Claude (cache par SHA-256)
 cmrmp build                    # tables, entités, graphe, signaux d'alerte, coûts
 cmrmp audit                    # couverture : années, maîtres d'ouvrage, part des marchés avec PV
 cmrmp hf publish --repo utilisateur/cmr-marches-publics --bucket utilisateur/cmr-marches-brut
@@ -129,6 +129,13 @@ renvoie ce qu'elle a capturé même si le délai est atteint. La collecte repren
   plus résilient mais lent et coûteux. On l'utilise une fois par site, avec domaines autorisés,
   aucune connexion, étapes bornées et sortie validée par schéma, et le contenu des pages est traité
   comme non fiable (injection de prompt). Un humain relit la carte, puis Playwright collecte.
+- **PDF avec PyMuPDF** : texte trié par ordre de lecture ; pages scannées passées à l'OCR
+  intégré de PyMuPDF (Tesseract `fra+eng`, 300 dpi), avec ocrmypdf en repli ; tableaux détectés
+  par `find_tables` (lignes tracées, puis alignement du texte), dont le texte des cellules est
+  recomposé à partir des mots ; métadonnées du PDF (date de création, logiciel). Les tableaux des
+  PV donnent une table `soumissions` sans LLM (`modele_extraction = pymupdf_tables`), et le LLM
+  reçoit le texte suivi des tableaux en Markdown. Un scan trop lourd est envoyé page par page
+  sous forme d'images rendues par PyMuPDF.
 - **LLM sous contrôle** : schémas Pydantic stricts, champs absents laissés à null, citation source
   pour chaque montant, contrôle croisé par regex, cache par empreinte, repli serveur en cas de refus.
 - **Anti-circularité** : les signaux d'alerte sont des étiquettes faibles, publiées à part. Ils ne

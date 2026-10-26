@@ -154,10 +154,18 @@ def extract(doc_sha: str, kind: str, text: str, pdf_path: Path | None = None) ->
 
     client = anthropic.Anthropic()
     content: list[dict] = []
-    if pdf_path is not None and len(text.strip()) < 200 and pdf_path.stat().st_size < 30_000_000:
-        # PDF scanné sans OCR local : on envoie le PDF, Claude lit les images de pages.
-        content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                        "data": base64.standard_b64encode(pdf_path.read_bytes()).decode()}})
+    if pdf_path is not None and len(text.strip()) < 200:
+        # PDF scanné sans OCR local : Claude lit le PDF, ou les pages rendues par PyMuPDF
+        # quand le fichier dépasse la taille admise pour un document.
+        if pdf_path.stat().st_size < 30_000_000:
+            content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                            "data": base64.standard_b64encode(pdf_path.read_bytes()).decode()}})
+        else:
+            from .documents import pdf_page_images
+
+            for png in pdf_page_images(pdf_path):
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                "data": base64.standard_b64encode(png).decode()}})
         content.append({"type": "text", "text": f"Type de document : {kind}. Extrais les champs du schéma."})
     else:
         if len(text) > MAX_CHARS:

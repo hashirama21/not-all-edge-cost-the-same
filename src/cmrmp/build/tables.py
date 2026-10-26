@@ -107,6 +107,20 @@ def build_all() -> dict[str, pd.DataFrame]:
                              "duree_mois": e.get("duree_mois"), "motif": e.get("motif"),
                              "marche_reference": _ref(e.get("marche_reference"))})
 
+    # PV sans extraction LLM : soumissions lues dans les tableaux PyMuPDF.
+    tb_path = interim("extract_table_bids.parquet")
+    if tb_path.exists():
+        done = {r["doc_id"] for r in soum}
+        tb = pd.read_parquet(tb_path)
+        for r in tb[~tb["doc_id"].isin(done)].to_dict("records") if not tb.empty else []:
+            soum.append({"doc_id": r["doc_id"], "url_source": url_of.get(r["doc_id"]), "modele_extraction": "pymupdf_tables",
+                         "reference": _ref(r.get("reference")), "type_pv": None, "maitre_ouvrage": None,
+                         "date_seance": None, "lot": None, "soumissionnaire_brut": r["soumissionnaire"],
+                         "montant_offre_fcfa": r.get("montant_offre_fcfa"), "recevable": r.get("recevable"),
+                         "rang": r.get("rang"), "motif_rejet": r.get("observation"), "niu": None, "rccm": None,
+                         "adresse": None, "telephone": None, "email": None, "representant": None,
+                         "nombre_offres_annonce": None})
+
     # Fiches ARMP « LIBELLÉ : valeur » : attributions sans LLM.
     for rec in _jsonl("armp_details.jsonl"):
         lv = rec.get("label_values", {})
@@ -124,7 +138,7 @@ def build_all() -> dict[str, pd.DataFrame]:
         "soumissions": pd.DataFrame(soum),
         "attributions": pd.DataFrame(attr),
         "sanctions": pd.DataFrame(sanc),
-        "documents": docs.drop(columns=[c for c in ("raw_path", "text_path") if c in docs.columns]),
+        "documents": docs.drop(columns=[c for c in ("raw_path", "text_path", "meta_path") if c in docs.columns]),
     }
     t.update(_resolve_entities(t))
     return t
