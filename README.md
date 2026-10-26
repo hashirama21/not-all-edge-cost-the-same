@@ -23,6 +23,7 @@ coleps ────┘   par source              (avis, PV, décision, sanction)
 | [PRIDESOFT](https://armp.cm/pridesoft) | rapports d'avis `index.php?type_avis=AO&id=N`, documents `/_lib/file/doc/0903/AAAA/MM/JJ/ENTITE/` | identifiants séquentiels | `sources/armp.py` |
 | JDM (ARMP) | Journal des marchés en PDF | **espace abonnés : désactivé par défaut** | `sources/armp.py` |
 | [MINMAP](https://minmap.cm/?p=19494) | communiqués d'exclusion, de suspension, de résiliation | API REST WordPress, sinon recherche HTML | `sources/minmap.py` |
+| DGI (fiscalis.dgi.cm) | fichier des contribuables : NIU, raison sociale, activité, centre, régime ; listes officielles (inactifs…) | formulaire ASP.NET `listecontribuable.aspx` + PDF/Excel | `sources/dgi.py` |
 | COLEPS (marchespublics.cm) | plateforme électronique, obligatoire depuis l'exercice 2025 | JavaScript : carte par agent puis Playwright | `agents/`, `sources/coleps.py` |
 
 Les gabarits d'URL et les sélecteurs sont dans `config/sources.yaml`. Ils viennent d'URL
@@ -72,6 +73,30 @@ cmrmp hf publish --repo utilisateur/cmr-marches-publics --bucket utilisateur/cmr
 Toutes les étapes sont relançables : une URL déjà capturée n'est pas re-téléchargée, une
 extraction LLM déjà faite n'est pas refacturée.
 
+## Fichier des contribuables (DGI)
+
+```bash
+cmrmp dgi crawl                     # parcours des formulaires + listes officielles
+cmrmp dgi unify                     # data/dgi/contribuables.parquet et .csv.gz (un NIU par ligne)
+cmrmp dgi publish --bucket krohn/cmr-marches-brut
+```
+
+`dgi crawl` lit le formulaire ASP.NET (`__VIEWSTATE`, `__EVENTVALIDATION`, listes déroulantes,
+boutons). Il soumet chaque option des listes déroulantes, puis des préfixes de raison sociale
+(A…Z, 0…9), raffinés d'une lettre tant que le résultat semble tronqué. Il suit la pagination
+GridView (`__doPostBack(…, 'Page$N')`) et déclenche les boutons d'export (Excel, CSV, PDF).
+Chaque POST est mis en cache sous une clé sans l'état ASP.NET : un parcours interrompu reprend
+sans refaire de requêtes. Les listes officielles en PDF (contribuables inactifs au 1er février 2026,
+fichier de la dépense publique du MINFI) sont lues avec les tableaux PyMuPDF, et les nouveaux
+fichiers liés depuis impots.cm sont ajoutés automatiquement.
+
+Le fichier unifié garde, par NIU : raison sociale, sigle, activité, centre, régime, localisation,
+type de personne (M morale, P physique), statuts des listes où il figure et toutes les URL
+sources. Les personnes physiques (NIU en P) sont pseudonymisées par défaut (NIU, nom, sigle et
+localisation hachés avec `CMRMP_SALT`), et le bucket est privé par défaut. Le registre compte
+environ 3,2 millions de NIU selon un guide tiers : à 3 secondes par page, un parcours complet
+prend plusieurs jours, d'où la reprise par cache et le workflow mensuel `dgi.yml`.
+
 ## Tables produites (`data/processed/`, publiées sur Hugging Face)
 
 | Table | Grain | Champs principaux |
@@ -98,6 +123,7 @@ préparation et les frais de création ou de modification de société sont des 
 | --- | --- | --- |
 | `ci.yml` | push, PR | tests |
 | `pipeline.yml` | chaque dimanche 01:17 UTC, ou manuel | tests → collecte (une tâche par source, en parallèle) → documents → extraction, graphe, audit → publication HF |
+| `dgi.yml` | le 3 de chaque mois, ou manuel | fichier des contribuables → fichier unifié → bucket HF |
 | `agent-explore.yml` | manuel | cartographie de COLEPS par l'agent ; la carte sort en artefact pour relecture |
 
 Le bucket Hugging Face sert de cache persistant entre deux lancements : chaque tâche
@@ -108,12 +134,12 @@ renvoie ce qu'elle a capturé même si le délai est atteint. La collecte repren
 
 | Nom | Type | Valeur |
 | --- | --- | --- |
-| `HF_TOKEN` | secret | jeton Hugging Face en écriture |
+| `HF_TOKEN` | secret | jeton Hugging Face en écriture (`gh secret set HF_TOKEN -R hashirama21/not-all-edge-cost-the-same`) |
 | `ANTHROPIC_API_KEY` | secret | clé API Claude (extraction et agent) |
 | `CMRMP_SALT` | secret | sel aléatoire long pour la pseudonymisation |
 | `CMRMP_CONTACT` | variable | e-mail de contact placé dans le User-Agent |
-| `HF_DATASET` | variable | ex. `utilisateur/cmr-marches-publics` |
-| `HF_BUCKET` | variable | ex. `utilisateur/cmr-marches-brut` |
+| `HF_DATASET` | variable | par défaut `krohn/cmr-marches-publics` |
+| `HF_BUCKET` | variable | par défaut `krohn/cmr-marches-brut` |
 | `RUNNER` | variable (facultative) | runner auto-hébergé, si les sites bloquent ou ralentissent les IP des runners GitHub |
 
 ## Pratiques retenues

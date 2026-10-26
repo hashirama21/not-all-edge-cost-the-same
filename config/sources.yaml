@@ -73,3 +73,33 @@ costs:
   company_creation_days: 3
   # Modification statutaire (changement de gérant), frais notariaux + greffe (hypothèse).
   statute_change_fcfa: 250000
+
+dgi:
+  # Consultation publique du fichier des contribuables (ASP.NET WebForms).
+  # L'adresse fiscalis vient de la demande ; teledeclaration-dgi.cm est citée par des guides tiers.
+  consultation_urls:
+    - "http://fiscalis.dgi.cm/modules/immatriculation/Consultation/listecontribuable.aspx"
+    - "https://teledeclaration-dgi.cm/modules/immatriculation/Consultation/listecontribuable.aspx"
+  # Champ texte utilisé pour la recherche par préfixe (raison sociale), repéré par son nom ou id.
+  search_field_regex: "raison|nom|denomination|libelle|rs"
+  niu_field_regex: "niu|nui|identifiant"
+  submit_regex: "recherch|search|valider|ok|afficher|consulter"
+  export_regex: "export|excel|xls|csv|pdf|t[ée]l[ée]charg"
+  # Préfixes de départ ; un préfixe dont les résultats paraissent tronqués est raffiné d'une lettre.
+  alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+  max_prefix_len: 4
+  result_cap_hint: 1000          # au-delà, on suppose une troncature et on raffine le préfixe
+  max_pages_per_query: 2000
+  # Listes officielles publiées en PDF (tableaux extraits avec PyMuPDF).
+  official_files:
+    - url: "https://www.impots.cm/sites/default/files/documents/INACTIFS%20A%20PUBLIER%20_FINAL.pdf"
+      statut: "inactif"
+      date_reference: "2026-02-01"
+    - url: "https://minfi.gov.cm/wp-content/uploads/2021/02/ENTREES-SORTIES_10-02-2021.pdf"
+      statut: "entrees_sorties_depense_publique"
+      date_reference: "2021-02-10"
+  official_pages:
+    - "https://www.impots.cm/fr/fichier-des-contribuables"
+    - "https://www.impots.cm/fr/documents"
+  # Publication : les personnes physiques (NIU en P…) sont pseudonymisées par défaut.
+  keep_natural_persons: false

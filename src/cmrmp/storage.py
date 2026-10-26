@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ _EXT_BY_TYPE = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.ms-excel": ".xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/csv": ".csv",
 }
 
 
@@ -35,10 +37,20 @@ def url_hash(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
-def guess_ext(url: str, content_type: str) -> str:
+def guess_ext(url: str, content_type: str, disposition: str = "") -> str:
+    """Extension : nom de fichier de Content-Disposition, puis type MIME, puis URL.
+
+    Un export ASP.NET arrive souvent sur une URL en .aspx : l'URL vient donc en dernier."""
+    m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", disposition or "", re.I)
+    if m and Path(m.group(1)).suffix:
+        return Path(m.group(1)).suffix.lower()
     ctype = content_type.split(";")[0].strip().lower()
     if ctype in _EXT_BY_TYPE:
         return _EXT_BY_TYPE[ctype]
+    if ctype and ctype not in ("application/octet-stream", "text/plain", "application/force-download"):
+        ext = mimetypes.guess_extension(ctype)
+        if ext:
+            return ext
     path_ext = Path(url.split("?")[0]).suffix.lower()
     if path_ext and len(path_ext) <= 5:
         return path_ext
@@ -94,7 +106,7 @@ class RawStore:
     def put(self, url: str, final_url: str, status: int, headers: dict, body: bytes, extra: dict | None = None) -> Capture:
         content_type = headers.get("content-type", "")
         base = self._base(url)
-        path = base.with_suffix(guess_ext(final_url, content_type))
+        path = base.with_suffix(guess_ext(final_url, content_type, headers.get("content-disposition", "")))
         path.write_bytes(body)
         cap = Capture(
             source=self.source,

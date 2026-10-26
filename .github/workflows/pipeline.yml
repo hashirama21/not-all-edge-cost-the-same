@@ -31,8 +31,8 @@ concurrency:
 env:
   CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
-  HF_BUCKET: ${{ vars.HF_BUCKET }}
-  HF_DATASET: ${{ vars.HF_DATASET }}
+  HF_BUCKET: ${{ vars.HF_BUCKET || 'krohn/cmr-marches-brut' }}
+  HF_DATASET: ${{ vars.HF_DATASET || 'krohn/cmr-marches-publics' }}
   PYTHONUNBUFFERED: "1"
 
 jobs:

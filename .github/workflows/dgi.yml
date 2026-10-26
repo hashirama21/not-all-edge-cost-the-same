@@ -1,0 +1,64 @@
+name: dgi-contribuables
+
+on:
+  schedule:
+    - cron: "43 2 3 * *"
+  workflow_dispatch:
+    inputs:
+      official:
+        description: "Inclure les listes officielles (PDF/Excel)"
+        type: boolean
+        default: true
+      public:
+        description: "Bucket public (sinon privé)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: dgi
+  cancel-in-progress: false
+
+env:
+  CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_BUCKET: ${{ vars.HF_BUCKET || 'krohn/cmr-marches-brut' }}
+  CMRMP_SALT: ${{ secrets.CMRMP_SALT }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  contribuables:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Installation (OCR PyMuPDF via Tesseract)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-fra
+          pip install -e ".[hf]"
+      - name: Cache depuis le bucket
+        run: cmrmp hf pull --bucket "$HF_BUCKET" --path raw/dgi --path interim/dgi
+      - name: Parcours des formulaires et téléchargements
+        run: |
+          set +e
+          if [ "${{ github.event.inputs.official || 'true' }}" = "true" ]; then timeout 320m cmrmp dgi crawl
+          else timeout 320m cmrmp dgi crawl --no-official; fi
+          code=$?
+          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
+      - name: Fichier unifié
+        if: always()
+        run: cmrmp dgi unify
+      - name: Envoi vers le bucket
+        if: always()
+        run: |
+          if [ "${{ github.event.inputs.public }}" = "true" ]; then cmrmp dgi publish --bucket "$HF_BUCKET" --public
+          else cmrmp dgi publish --bucket "$HF_BUCKET"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contribuables-meta
+          path: data/dgi/contribuables.meta.json
+          if-no-files-found: ignore

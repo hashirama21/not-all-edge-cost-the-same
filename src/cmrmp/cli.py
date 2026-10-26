@@ -12,9 +12,11 @@ app = typer.Typer(add_completion=False, help="Marchés publics camerounais : col
 crawl_app = typer.Typer(help="Collecte par source")
 agent_app = typer.Typer(help="Agent navigateur (découverte de structure)")
 hf_app = typer.Typer(help="Hugging Face (dataset + bucket)")
+dgi_app = typer.Typer(help="DGI : fichier des contribuables (NIU)")
 app.add_typer(crawl_app, name="crawl")
 app.add_typer(agent_app, name="agent")
 app.add_typer(hf_app, name="hf")
+app.add_typer(dgi_app, name="dgi")
 
 
 def _years(spec: str | None) -> list[int] | None:
@@ -191,6 +193,39 @@ def hf_push(bucket: str = typer.Option(...), path: list[str] = typer.Option(None
     from .publish import hf
 
     hf.sync_raw(bucket, direction="up", paths=path or None)
+
+
+@dgi_app.command("crawl")
+def dgi_crawl(url: list[str] = typer.Option(None, help="URL de consultation (répétable)"),
+              official: bool = typer.Option(True, help="listes officielles PDF/Excel aussi")):
+    """Parcourt les formulaires de consultation et télécharge les listes et exports."""
+    from .sources import dgi
+
+    n = dgi.crawl_consultation(url or None)
+    m = dgi.crawl_official() if official else 0
+    typer.echo(f"consultation : {n} lignes ; fichiers officiels : {m} lignes")
+
+
+@dgi_app.command("unify")
+def dgi_unify(keep_natural_persons: bool = typer.Option(None, help="ne pas pseudonymiser les NIU en P")):
+    """Fusionne toutes les sources en un seul fichier (un NIU par ligne)."""
+    import os
+
+    from .sources import dgi
+
+    df = dgi.unify()
+    paths = dgi.write_unified(df, os.environ.get("CMRMP_SALT"), keep_natural_persons)
+    typer.echo(f"{len(df)} NIU -> {paths['parquet']} et {paths['csv']}")
+
+
+@dgi_app.command("publish")
+def dgi_publish(bucket: str = typer.Option(..., help="utilisateur/nom-du-bucket"),
+                public: bool = typer.Option(False)):
+    """Envoie le fichier unifié et le brut DGI dans le bucket Hugging Face."""
+    from .sources import dgi
+
+    dgi.publish_bucket(bucket, private=not public)
+    typer.echo(f"envoyé : hf://buckets/{bucket}/dgi")
 
 
 if __name__ == "__main__":

@@ -49,20 +49,22 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 class PoliteClient:
-    def __init__(self, source: str, *, min_delay_s: float | None = None):
+    def __init__(self, source: str, *, min_delay_s: float | None = None, jitter_s: float | None = None,
+                 transport: httpx.BaseTransport | None = None):
         cfg = settings()["politeness"]
         contact = settings()["contact"] or "contact-non-renseigne"
         self.source = source
         self.store = RawStore(source)
         self.min_delay = min_delay_s if min_delay_s is not None else cfg["min_delay_s"]
-        self.jitter = cfg["jitter_s"]
+        self.jitter = jitter_s if jitter_s is not None else cfg["jitter_s"]
         self.respect_robots = cfg["respect_robots"]
         self.max_retries = cfg["max_retries"]
-        self.user_agent = f"cmrmp/{__version__} (recherche académique; +mailto:{contact})"
+        self.user_agent = f"cmrmp/{__version__} (academic research; +mailto:{contact})"
         self.client = httpx.Client(
             headers={"User-Agent": self.user_agent, "Accept-Language": "fr,en;q=0.8"},
             timeout=cfg["timeout_s"],
             follow_redirects=True,
+            transport=transport,
         )
         self._robots: dict[str, RobotFileParser | None] = {}
         self._last_hit: dict[str, float] = {}
@@ -112,9 +114,14 @@ class PoliteClient:
 
     # -- requêtes -----------------------------------------------------------
     def fetch(self, url: str, *, refresh: bool = False, extra: dict | None = None,
-              method: str = "GET", data: dict | None = None) -> Capture | None:
-        """Renvoie la capture (depuis le cache si présente). None si 404/410."""
-        cached = self.store.get(url) if method == "GET" else None
+              method: str = "GET", data: dict | None = None, cache_key: str | None = None) -> Capture | None:
+        """Renvoie la capture (depuis le cache si présente). None si 404/410.
+
+        Un POST n'est mis en cache que si `cache_key` est fourni (ex. URL + paramètres du
+        formulaire hors __VIEWSTATE), ce qui rend reprenable un parcours de formulaires.
+        """
+        key = cache_key or url
+        cached = self.store.get(key) if (method == "GET" or cache_key) else None
         if cached and not refresh:
             return cached
         if not self.allowed(url):
@@ -153,7 +160,7 @@ class PoliteClient:
         if resp.status_code >= 400:
             log.warning("HTTP %s sur %s", resp.status_code, url)
             return None
-        return self.store.put(url, str(resp.url), resp.status_code, dict(resp.headers), resp.content, extra)
+        return self.store.put(key, str(resp.url), resp.status_code, dict(resp.headers), resp.content, extra)
 
     def close(self) -> None:
         self.client.close()
