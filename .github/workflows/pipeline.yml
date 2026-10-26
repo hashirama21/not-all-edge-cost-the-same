@@ -74,28 +74,28 @@ jobs:
         run: |
           pip install -e ".[hf,browser]"
           if [ "${{ matrix.source }}" = "coleps" ]; then python -m playwright install --with-deps chromium; fi
+      - name: Vérification Hugging Face
+        if: steps.sel.outputs.run == 'true'
+        run: scripts/step.sh "HF ${{ matrix.source }}" cmrmp hf check --bucket "$HF_BUCKET"
       - name: Cache depuis le bucket
         if: steps.sel.outputs.run == 'true'
-        run: cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+        run: scripts/step.sh "Pull ${{ matrix.source }}" cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
       - name: Collecte
         if: steps.sel.outputs.run == 'true'
         run: |
-          set +e
+          S="scripts/step.sh Collecte-${{ matrix.source }} timeout 320m"
           case "${{ matrix.source }}" in
-            katika)    timeout 320m cmrmp crawl katika --years "${{ github.event.inputs.years || '2018-2026' }}" ;;
-            armp)      timeout 320m cmrmp crawl armp ;;
-            pridesoft) timeout 320m cmrmp crawl pridesoft ;;
-            minmap)    timeout 320m cmrmp crawl minmap ;;
+            katika)    $S cmrmp crawl katika --years "${{ github.event.inputs.years || '2018-2026' }}" ;;
+            armp)      $S cmrmp crawl armp ;;
+            pridesoft) $S cmrmp crawl pridesoft ;;
+            minmap)    $S cmrmp crawl minmap ;;
             coleps)
-              if [ -f config/sitemaps/coleps.json ]; then timeout 320m cmrmp crawl coleps
+              if [ -f config/sitemaps/coleps.json ]; then $S cmrmp crawl coleps
               else echo "::notice::config/sitemaps/coleps.json absent : lancez le workflow agent-explore puis versionnez la carte relue"; fi ;;
           esac
-          code=$?
-          # 124 = délai atteint : la collecte reprendra au prochain lancement grâce au cache
-          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
       - name: Envoi vers le bucket
         if: always() && steps.sel.outputs.run == 'true'
-        run: cmrmp hf push --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+        run: scripts/step.sh "Push ${{ matrix.source }}" cmrmp hf push --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
 
   documents:
     needs: crawl
@@ -109,15 +109,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e ".[hf]"
-      - run: cmrmp hf pull --bucket "$HF_BUCKET" --path interim --path raw/docs
+      - run: scripts/step.sh "Pull documents" cmrmp hf pull --bucket "$HF_BUCKET" --path interim --path raw/docs
       - name: Téléchargement des documents
-        run: |
-          set +e
-          timeout 330m cmrmp crawl documents
-          code=$?
-          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
+        run: scripts/step.sh "Documents" timeout 330m cmrmp crawl documents
       - if: always()
-        run: cmrmp hf push --bucket "$HF_BUCKET" --path raw/docs
+        run: scripts/step.sh "Push documents" cmrmp hf push --bucket "$HF_BUCKET" --path raw/docs
 
   build:
     needs: documents
@@ -137,22 +133,22 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q ocrmypdf tesseract-ocr-fra
           pip install -e ".[hf,llm]"
-      - run: cmrmp hf pull --bucket "$HF_BUCKET"
+      - run: scripts/step.sh "Pull build" cmrmp hf pull --bucket "$HF_BUCKET"
       - name: Extraction
         run: |
-          if [ "${{ github.event.inputs.llm || 'true' }}" = "true" ]; then cmrmp extract --llm; else cmrmp extract; fi
+          if [ "${{ github.event.inputs.llm || 'true' }}" = "true" ]; then scripts/step.sh Extraction cmrmp extract --llm; else scripts/step.sh Extraction cmrmp extract; fi
       - name: Graphe, signaux, coûts
-        run: cmrmp build
+        run: scripts/step.sh Build cmrmp build
       - name: Audit de couverture
-        run: cmrmp audit
+        run: scripts/step.sh Audit cmrmp audit
       - name: Cache vers le bucket
         if: always()
-        run: cmrmp hf push --bucket "$HF_BUCKET" --path text --path llm_cache --path interim/extract
+        run: scripts/step.sh "Push build" cmrmp hf push --bucket "$HF_BUCKET" --path text --path llm_cache --path interim/extract
       - name: Publication Hugging Face
         if: github.event_name == 'schedule' || github.event.inputs.publish == 'true'
         run: |
-          if [ "${{ github.event.inputs.public }}" = "true" ]; then cmrmp hf publish --repo "$HF_DATASET" --public
-          else cmrmp hf publish --repo "$HF_DATASET"; fi
+          if [ "${{ github.event.inputs.public }}" = "true" ]; then scripts/step.sh Publication cmrmp hf publish --repo "$HF_DATASET" --public
+          else scripts/step.sh Publication cmrmp hf publish --repo "$HF_DATASET"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

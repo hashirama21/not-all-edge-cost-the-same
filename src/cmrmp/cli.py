@@ -228,5 +228,43 @@ def dgi_publish(bucket: str = typer.Option(..., help="utilisateur/nom-du-bucket"
     typer.echo(f"envoyé : hf://buckets/{bucket}/dgi")
 
 
+@hf_app.command("check")
+def hf_check(bucket: str = typer.Option(None)):
+    """Vérifie le jeton Hugging Face (et l'accès au bucket) avant de lancer une tâche longue."""
+    import os
+
+    from huggingface_hub import HfApi
+
+    if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
+        typer.echo("HF_TOKEN absent : créez le secret GitHub HF_TOKEN (gh secret set HF_TOKEN)")
+        raise typer.Exit(1)
+    api = HfApi()
+    try:
+        me = api.whoami()
+    except Exception as exc:
+        typer.echo(f"jeton Hugging Face refusé : {exc}")
+        raise typer.Exit(1)
+    typer.echo(f"connecté en tant que {me.get('name')}")
+    if bucket:
+        try:
+            api.create_bucket(bucket, private=True, exist_ok=True)
+            typer.echo(f"bucket prêt : {bucket}")
+        except Exception as exc:
+            typer.echo(f"bucket {bucket} inaccessible : {exc}")
+            raise typer.Exit(1)
+
+
+def run():
+    """Point d'entrée : un site injoignable ou interdit par robots.txt donne le code 3
+    (avertissement), pas un plantage ; la suite du pipeline continue."""
+    from .http import HostUnreachable, RobotsDisallowed
+
+    try:
+        app()
+    except (HostUnreachable, RobotsDisallowed) as exc:
+        typer.echo(f"SOURCE INDISPONIBLE : {type(exc).__name__}: {exc}", err=True)
+        raise SystemExit(3)
+
+
 if __name__ == "__main__":
-    app()
+    run()

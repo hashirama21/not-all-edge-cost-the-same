@@ -39,23 +39,22 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-fra
           pip install -e ".[hf]"
+      - name: Vérification Hugging Face
+        run: scripts/step.sh "HF dgi" cmrmp hf check --bucket "$HF_BUCKET"
       - name: Cache depuis le bucket
-        run: cmrmp hf pull --bucket "$HF_BUCKET" --path raw/dgi --path interim/dgi
+        run: scripts/step.sh "Pull dgi" cmrmp hf pull --bucket "$HF_BUCKET" --path raw/dgi --path interim/dgi
       - name: Parcours des formulaires et téléchargements
         run: |
-          set +e
-          if [ "${{ github.event.inputs.official || 'true' }}" = "true" ]; then timeout 320m cmrmp dgi crawl
-          else timeout 320m cmrmp dgi crawl --no-official; fi
-          code=$?
-          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
+          if [ "${{ github.event.inputs.official || 'true' }}" = "true" ]; then scripts/step.sh "Collecte DGI" timeout 320m cmrmp dgi crawl
+          else scripts/step.sh "Collecte DGI" timeout 320m cmrmp dgi crawl --no-official; fi
       - name: Fichier unifié
         if: always()
-        run: cmrmp dgi unify
+        run: scripts/step.sh "Unification" cmrmp dgi unify
       - name: Envoi vers le bucket
         if: always()
         run: |
-          if [ "${{ github.event.inputs.public }}" = "true" ]; then cmrmp dgi publish --bucket "$HF_BUCKET" --public
-          else cmrmp dgi publish --bucket "$HF_BUCKET"; fi
+          if [ "${{ github.event.inputs.public }}" = "true" ]; then scripts/step.sh "Push dgi" cmrmp dgi publish --bucket "$HF_BUCKET" --public
+          else scripts/step.sh "Push dgi" cmrmp dgi publish --bucket "$HF_BUCKET"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

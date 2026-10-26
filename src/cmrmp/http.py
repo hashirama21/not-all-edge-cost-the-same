@@ -44,6 +44,10 @@ class RobotsDisallowed(Exception):
     pass
 
 
+class HostUnreachable(Exception):
+    """L'hôte ne répond plus (erreurs réseau répétées après reprises) : on arrête la source."""
+
+
 def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, (RetryableStatus, httpx.TransportError))
 
@@ -69,6 +73,8 @@ class PoliteClient:
         self._robots: dict[str, RobotFileParser | None] = {}
         self._last_hit: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._consecutive_failures: dict[str, int] = {}
+        self.max_consecutive_failures = 5
 
     # -- robots.txt ---------------------------------------------------------
     def _robots_for(self, url: str) -> RobotFileParser | None:
@@ -152,7 +158,17 @@ class PoliteClient:
                 raise RetryableStatus(resp.status_code, wait)
             return resp
 
-        resp = _do()
+        host = urlsplit(url).netloc
+        try:
+            resp = _do()
+        except (httpx.TransportError, RetryableStatus) as exc:
+            n = self._consecutive_failures.get(host, 0) + 1
+            self._consecutive_failures[host] = n
+            log.error("échec définitif %s : %s", url, exc)
+            if n >= self.max_consecutive_failures:
+                raise HostUnreachable(f"{host} injoignable ({n} échecs de suite, dernier : {exc})") from exc
+            return None
+        self._consecutive_failures[host] = 0
         if resp.status_code == 304 and cached:
             return cached
         if resp.status_code in (404, 410):
