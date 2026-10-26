@@ -1,0 +1,34 @@
+name: agent-explore
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Site à cartographier"
+        default: "https://www.marchespublics.cm"
+      max_steps:
+        description: "Nombre maximal d'étapes de l'agent"
+        default: "60"
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installation (browser-use isolé)
+        run: |
+          pip install -e ".[agent,browser]"
+          python -m playwright install --with-deps chromium
+      - name: Exploration
+        run: cmrmp agent explore "${{ github.event.inputs.url }}" --out data/sitemaps/coleps.json --max-steps ${{ github.event.inputs.max_steps }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sitemap
+          path: data/sitemaps/

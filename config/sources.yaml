@@ -1,0 +1,75 @@
+# Configuration des sources. Les gabarits d'URL viennent d'URL publiques observées
+# (moteurs de recherche, octobre 2026) ; les sélecteurs CSS sont des valeurs de départ
+# à vérifier avec `cmrmp discover <url>` avant une collecte massive.
+
+politeness:
+  min_delay_s: 3.0          # délai minimal entre deux requêtes vers un même hôte
+  jitter_s: 1.5
+  timeout_s: 60
+  max_retries: 5
+  respect_robots: true
+  # Plages horaires de collecte (heure de Yaoundé, UTC+1) : éviter les heures de bureau.
+  preferred_hours: [19, 7]
+
+katika:
+  base_url: "https://katika237.com"
+  # Exemple observé : /tender/?o=&page=12&r=SERVICES+CENTRAUX&sort=date&type=&y=2023
+  list_url: "https://katika237.com/tender/?o=&page={page}&r={region}&sort=date&type={type}&y={year}"
+  years: [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
+  regions: [""]             # "" = toutes ; sinon "SERVICES CENTRAUX", "CENTRE", ...
+  types: [""]               # "" = tous les types d'avis
+  max_pages: 2000
+  item_selectors: ["table tbody tr", "div.card", "li.list-group-item", "article"]
+  detail_link_regex: "/tender/[^?#]+"
+  document_link_regex: "\\.(pdf|docx?|xlsx?)(\\?|$)"
+
+armp:
+  base_url: "https://armp.cm"
+  # Exemple observé : /details?type_publication=DEC-ATTR&id_publication=22080
+  detail_url: "https://armp.cm/details?type_publication={type}&id_publication={id}"
+  # DEC-ATTR est confirmé. Les autres codes se découvrent avec `cmrmp crawl armp-discover`.
+  types: ["DEC-ATTR"]
+  id_range: [1, 30000]
+  stop_after_consecutive_missing: 400
+  listing_urls: ["https://armp.cm/", "https://armp.cm/en"]
+
+pridesoft:
+  base_url: "https://pridesoft.armp.cm"
+  # Exemple observé : /0903_publications_report_appel_offres/index.php?type_avis=AO&id=6990&affichehtml=0
+  report_url: "https://pridesoft.armp.cm/0903_publications_report_appel_offres/index.php?type_avis={type}&id={id}&affichehtml={html}"
+  types: ["AO"]
+  id_range: [1, 20000]
+  stop_after_consecutive_missing: 400
+  # Documents : /_lib/file/doc/0903/AAAA/MM/JJ/ENTITE/fichier.pdf
+  document_path_regex: "/_lib/file/doc/0903/(\\d{4})/(\\d{2})/(\\d{2})/([^/]+)/"
+
+jdm:
+  # Le chemin « AbonnesJDM » suggère un espace abonnés. N'activer que si vous avez
+  # un abonnement ou une autorisation de l'ARMP.
+  enabled: false
+  pdf_url: "https://armp.cm/AbonnesJDM/Jdm{num}.pdf"
+  num_range: [1, 3500]
+
+minmap:
+  base_url: "https://minmap.cm"
+  # Le site expose des permaliens WordPress (/?p=19494) : on essaie l'API REST WP.
+  wp_api: "https://minmap.cm/wp-json/wp/v2/posts"
+  search_terms: ["exclu", "exclusion", "suspend", "sanction", "résiliation", "mise en demeure", "liste rouge"]
+
+coleps:
+  # Portail transactionnel, rendu JavaScript : exploration par agent, collecte par Playwright.
+  start_urls: ["https://www.marchespublics.cm", "https://www.publiccontracts.cm"]
+  allowed_domains: ["marchespublics.cm", "*.marchespublics.cm", "publiccontracts.cm", "*.publiccontracts.cm"]
+
+costs:
+  # Coût d'opportunité annuel de la caution immobilisée (taux débiteur indicatif CEMAC).
+  caution_rate_annual: 0.12
+  # Durée d'immobilisation par défaut si la validité de l'offre n'est pas lue (jours).
+  caution_days_default: 120
+  # Coût de montage d'une offre, en part du montant de l'offre (hypothèse à calibrer).
+  bid_preparation_share: 0.005
+  # Frais de création d'entreprise (CFCE, FCFA, à vérifier) et délai en jours.
+  company_creation_fcfa: 41500
+  company_creation_days: 3
+  # Modification statutaire (changement de gérant), frais notariaux + greffe (hypothèse).
+  statute_change_fcfa: 250000

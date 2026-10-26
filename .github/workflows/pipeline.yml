@@ -1,0 +1,163 @@
+name: pipeline
+
+on:
+  schedule:
+    - cron: "17 1 * * 0"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Sources à collecter (séparées par des virgules)"
+        default: "katika,armp,pridesoft,minmap,coleps"
+      years:
+        description: "Années Katika (ex. 2018-2026)"
+        default: "2018-2026"
+      llm:
+        description: "Extraction structurée par Claude"
+        type: boolean
+        default: true
+      publish:
+        description: "Publier sur Hugging Face"
+        type: boolean
+        default: true
+      public:
+        description: "Dataset public (sinon privé)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+env:
+  CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_BUCKET: ${{ vars.HF_BUCKET }}
+  HF_DATASET: ${{ vars.HF_DATASET }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,hf]"
+      - run: pytest -q
+
+  crawl:
+    needs: tests
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        source: [katika, armp, pridesoft, minmap, coleps]
+    steps:
+      - name: Source sélectionnée ?
+        id: sel
+        run: |
+          wanted="${{ github.event.inputs.sources || 'katika,armp,pridesoft,minmap,coleps' }}"
+          if [[ ",$wanted," == *",${{ matrix.source }},"* ]]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v5
+        if: steps.sel.outputs.run == 'true'
+      - uses: actions/setup-python@v6
+        if: steps.sel.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Installation
+        if: steps.sel.outputs.run == 'true'
+        run: |
+          pip install -e ".[hf,browser]"
+          if [ "${{ matrix.source }}" = "coleps" ]; then python -m playwright install --with-deps chromium; fi
+      - name: Cache depuis le bucket
+        if: steps.sel.outputs.run == 'true'
+        run: cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+      - name: Collecte
+        if: steps.sel.outputs.run == 'true'
+        run: |
+          set +e
+          case "${{ matrix.source }}" in
+            katika)    timeout 320m cmrmp crawl katika --years "${{ github.event.inputs.years || '2018-2026' }}" ;;
+            armp)      timeout 320m cmrmp crawl armp ;;
+            pridesoft) timeout 320m cmrmp crawl pridesoft ;;
+            minmap)    timeout 320m cmrmp crawl minmap ;;
+            coleps)
+              if [ -f config/sitemaps/coleps.json ]; then timeout 320m cmrmp crawl coleps
+              else echo "::notice::config/sitemaps/coleps.json absent : lancez le workflow agent-explore puis versionnez la carte relue"; fi ;;
+          esac
+          code=$?
+          # 124 = délai atteint : la collecte reprendra au prochain lancement grâce au cache
+          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
+      - name: Envoi vers le bucket
+        if: always() && steps.sel.outputs.run == 'true'
+        run: cmrmp hf push --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+
+  documents:
+    needs: crawl
+    if: always() && needs.crawl.result != 'cancelled'
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[hf]"
+      - run: cmrmp hf pull --bucket "$HF_BUCKET" --path interim --path raw/docs
+      - name: Téléchargement des documents
+        run: |
+          set +e
+          timeout 330m cmrmp crawl documents
+          code=$?
+          if [ $code -ne 0 ] && [ $code -ne 124 ]; then exit $code; fi
+      - if: always()
+        run: cmrmp hf push --bucket "$HF_BUCKET" --path raw/docs
+
+  build:
+    needs: documents
+    if: always() && needs.documents.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CMRMP_SALT: ${{ secrets.CMRMP_SALT }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Installation (OCR compris)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ocrmypdf tesseract-ocr-fra
+          pip install -e ".[hf,llm]"
+      - run: cmrmp hf pull --bucket "$HF_BUCKET"
+      - name: Extraction
+        run: |
+          if [ "${{ github.event.inputs.llm || 'true' }}" = "true" ]; then cmrmp extract --llm; else cmrmp extract; fi
+      - name: Graphe, signaux, coûts
+        run: cmrmp build
+      - name: Audit de couverture
+        run: cmrmp audit
+      - name: Cache vers le bucket
+        if: always()
+        run: cmrmp hf push --bucket "$HF_BUCKET" --path text --path llm_cache --path interim/extract
+      - name: Publication Hugging Face
+        if: github.event_name == 'schedule' || github.event.inputs.publish == 'true'
+        run: |
+          if [ "${{ github.event.inputs.public }}" = "true" ]; then cmrmp hf publish --repo "$HF_DATASET" --public
+          else cmrmp hf publish --repo "$HF_DATASET"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports
+          path: |
+            data/reports/
+            data/processed/er_paires_a_verifier.parquet
+          if-no-files-found: ignore
