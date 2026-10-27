@@ -156,7 +156,10 @@ préparation et les frais de création ou de modification de société sont des 
 | `ci.yml` | push, PR | tests |
 | `pipeline.yml` | chaque dimanche 01:17 UTC, ou manuel | tests → collecte (une tâche par source, en parallèle ; pour COLEPS, l'agent browser-use + llama.cpp produit la carte s'il n'en existe pas de valide) → documents → extraction, graphe, audit → publication HF |
 | `dgi.yml` | le 3 de chaque mois, ou manuel | fichier des contribuables → fichier unifié → bucket HF |
-| `agent-explore.yml` | manuel | cartographie de COLEPS par l'agent (llama.cpp local ou Claude) ; la carte sort en artefact pour relecture |
+| `agent-explore.yml` | manuel | cartographie de COLEPS par l'agent (llama.cpp local) ; la carte sort en artefact pour relecture |
+
+Les workflows n'appellent aucune API payante : l'extraction y est faite par PyMuPDF, l'OCR et
+les regex, l'agent tourne sur llama.cpp. `cmrmp extract --llm` (Claude) reste disponible en local.
 
 Avec l'option `coleps_explore` de `pipeline.yml` : `auto` lance l'agent seulement sans carte
 valide, `always` le relance, `never` ne le lance pas. Une carte relue dans `config/sitemaps/`
@@ -171,7 +174,6 @@ renvoie ce qu'elle a capturé même si le délai est atteint. La collecte repren
 | Nom | Type | Valeur |
 | --- | --- | --- |
 | `HF_TOKEN` | secret | jeton Hugging Face en écriture (`gh secret set HF_TOKEN -R hashirama21/not-all-edge-cost-the-same`) |
-| `ANTHROPIC_API_KEY` | secret | clé API Claude (extraction et agent) |
 | `CMRMP_SALT` | secret | sel aléatoire long pour la pseudonymisation |
 | `CMRMP_CONTACT` | variable | e-mail de contact placé dans le User-Agent |
 | `HF_DATASET` | variable | par défaut `krohn/cmr-marches-publics` |

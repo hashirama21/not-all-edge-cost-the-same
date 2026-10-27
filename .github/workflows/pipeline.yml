@@ -11,10 +11,6 @@ on:
       years:
         description: "Années Katika (ex. 2018-2026)"
         default: "2018-2026"
-      llm:
-        description: "Extraction structurée par Claude"
-        type: boolean
-        default: true
       publish:
         description: "Publier sur Hugging Face"
         type: boolean
@@ -178,7 +174,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CMRMP_SALT: ${{ secrets.CMRMP_SALT }}
     steps:
       - uses: actions/checkout@v5
@@ -189,11 +184,10 @@ jobs:
       - name: Installation (OCR compris)
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q ocrmypdf tesseract-ocr-fra
-          pip install -e ".[hf,llm]"
+          pip install -e ".[hf]"
       - run: scripts/step.sh "Pull build" cmrmp hf pull --bucket "$HF_BUCKET"
-      - name: Extraction
-        run: |
-          if [ "${{ github.event.inputs.llm || 'true' }}" = "true" ]; then scripts/step.sh Extraction cmrmp extract --llm; else scripts/step.sh Extraction cmrmp extract; fi
+      - name: Extraction (PyMuPDF, OCR, regex ; sans API payante)
+        run: scripts/step.sh Extraction cmrmp extract
       - name: Graphe, signaux, coûts
         run: scripts/step.sh Build cmrmp build
       - name: Audit de couverture

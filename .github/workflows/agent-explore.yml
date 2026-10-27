@@ -9,20 +9,14 @@ on:
       max_steps:
         description: "Nombre maximal d'étapes de l'agent"
         default: "40"
-      backend:
-        description: "Modèle de l'agent"
-        type: choice
-        options: [llamacpp, anthropic]
-        default: llamacpp
 
 jobs:
   explore:
     runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 340
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
-      CMRMP_AGENT_BACKEND: ${{ github.event.inputs.backend }}
+      CMRMP_AGENT_BACKEND: llamacpp
       LLAMA_BASE_URL: http://127.0.0.1:8080/v1
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       INPUT_URL: ${{ github.event.inputs.url }}
@@ -37,18 +31,16 @@ jobs:
           pip install -e ".[agent,browser]"
           python -m playwright install --with-deps chromium
       - name: Modèle local llama.cpp
-        if: github.event.inputs.backend == 'llamacpp'
         uses: ./.github/actions/llama-server
         with:
           model: ${{ vars.LLAMA_MODEL || 'unsloth/Qwen3.5-9B-GGUF:Q4_K_M' }}
           image: ${{ vars.LLAMA_IMAGE || 'ghcr.io/ggml-org/llama.cpp:server' }}
       - name: Vérification du modèle (santé + sortie structurée)
-        if: github.event.inputs.backend == 'llamacpp'
         run: cmrmp agent check
       - name: Exploration
         run: timeout 320m cmrmp agent explore "$INPUT_URL" --out data/sitemaps/coleps.json --max-steps "$INPUT_STEPS"
       - name: Journal de llama-server
-        if: failure() && github.event.inputs.backend == 'llamacpp'
+        if: failure()
         run: docker logs cmrmp-llama 2>&1 | tail -200
       - uses: actions/upload-artifact@v4
         if: always()
