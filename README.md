@@ -53,6 +53,37 @@ python -m venv .venv-agent && .venv-agent/bin/pip install -e ".[agent,browser]"
 .venv-agent/bin/python -m playwright install chromium
 ```
 
+## Agent browser-use sur modèle local (llama.cpp)
+
+L'agent [browser-use](https://github.com/browser-use/browser-use) cartographie COLEPS avec
+un modèle servi en local par `llama-server` (llama.cpp, API compatible OpenAI). browser-use
+le pilote via `ChatOpenAI(base_url=…)` ; la carte est rendue au format `SiteMap` grâce à
+`response_format: json_schema`, que llama.cpp convertit en grammaire.
+
+```bash
+bash scripts/llama_server.sh                 # Qwen3.5-9B en Docker, attend /health
+.venv-agent/bin/cmrmp agent check            # santé du serveur + sortie structurée conforme
+.venv-agent/bin/cmrmp agent explore          # carte dans data/sitemaps/coleps.json
+cmrmp crawl coleps                           # carte validée (schéma, domaines autorisés), puis Playwright
+```
+
+Réglages dans `config/sources.yaml` (section `agent`) ou par variables : `CMRMP_AGENT_BACKEND`
+(`llamacpp` par défaut, `anthropic` pour Claude), `LLAMA_BASE_URL`, `CMRMP_AGENT_MODEL`,
+`CMRMP_AGENT_VISION` (avec `LLAMA_VISION=true` côté serveur pour charger le `mmproj`).
+
+| Matériel | Modèle (`LLAMA_MODEL`) | Taille |
+| --- | --- | --- |
+| Runner GitHub standard (4 vCPU, 16 Go, sans GPU) : **par défaut** | `unsloth/Qwen3.5-9B-GGUF:Q4_K_M` | 5,7 Go |
+| Même runner, pour aller plus vite | `unsloth/Qwen3.5-4B-GGUF:Q4_K_M` | plus léger, moins précis |
+| Runner GPU ≥ 24 Go (`RUNNER` + `LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda`) | `unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M` | 16,5 Go |
+
+Qwen3.8 (août 2026) est la dernière génération de Qwen, mais son plus petit modèle fait 27B :
+sur CPU, un pas d'agent prendrait des dizaines de minutes. Qwen3.5-9B est le plus récent des
+petits Qwen ; il est multimodal et son raisonnement est coupé par défaut
+(`LLAMA_THINKING=false`). Même ainsi, sur CPU, un pas d'agent prend plusieurs minutes, car les
+prompts de browser-use font plusieurs milliers de jetons. L'agent tourne donc en `flash_mode`,
+sans vision, avec 40 étapes au plus.
+
 ## Utilisation de bout en bout
 
 ```bash
@@ -60,8 +91,9 @@ cmrmp crawl katika --years 2018-2026
 cmrmp crawl armp --types DEC-ATTR
 cmrmp crawl pridesoft --types AO
 cmrmp crawl minmap
+bash scripts/llama_server.sh                                        # modèle local (voir plus bas)
 .venv-agent/bin/cmrmp agent explore https://www.marchespublics.cm   # une fois ; relire la carte
-cp data/sitemaps/coleps.json config/sitemaps/coleps.json            # carte relue, versionnée
+cp data/sitemaps/coleps.json config/sitemaps/coleps.json            # carte relue, versionnée (prioritaire)
 cmrmp crawl coleps
 cmrmp crawl documents          # PDF/DOCX mis en file par les collecteurs
 cmrmp extract --llm            # PyMuPDF (texte, OCR, tableaux) + regex + Claude (cache par SHA-256)
@@ -122,9 +154,13 @@ préparation et les frais de création ou de modification de société sont des 
 | Workflow | Déclencheur | Rôle |
 | --- | --- | --- |
 | `ci.yml` | push, PR | tests |
-| `pipeline.yml` | chaque dimanche 01:17 UTC, ou manuel | tests → collecte (une tâche par source, en parallèle) → documents → extraction, graphe, audit → publication HF |
+| `pipeline.yml` | chaque dimanche 01:17 UTC, ou manuel | tests → collecte (une tâche par source, en parallèle ; pour COLEPS, l'agent browser-use + llama.cpp produit la carte s'il n'en existe pas de valide) → documents → extraction, graphe, audit → publication HF |
 | `dgi.yml` | le 3 de chaque mois, ou manuel | fichier des contribuables → fichier unifié → bucket HF |
-| `agent-explore.yml` | manuel | cartographie de COLEPS par l'agent ; la carte sort en artefact pour relecture |
+| `agent-explore.yml` | manuel | cartographie de COLEPS par l'agent (llama.cpp local ou Claude) ; la carte sort en artefact pour relecture |
+
+Avec l'option `coleps_explore` de `pipeline.yml` : `auto` lance l'agent seulement sans carte
+valide, `always` le relance, `never` ne le lance pas. Une carte relue dans `config/sitemaps/`
+passe toujours avant celle de l'agent, que le bucket garde sous `sitemaps/`.
 
 Le bucket Hugging Face sert de cache persistant entre deux lancements : chaque tâche
 récupère ses dossiers (`raw/<source>`, `interim/<source>`), collecte au plus 320 minutes, puis
@@ -141,6 +177,9 @@ renvoie ce qu'elle a capturé même si le délai est atteint. La collecte repren
 | `HF_DATASET` | variable | par défaut `krohn/cmr-marches-publics` |
 | `HF_BUCKET` | variable | par défaut `krohn/cmr-marches-brut` |
 | `RUNNER` | variable (facultative) | runner auto-hébergé, si les sites bloquent ou ralentissent les IP des runners GitHub |
+| `LLAMA_MODEL` | variable | votre modèle GGUF sur Hugging Face, `utilisateur/depot:quant` (par défaut `unsloth/Qwen3.5-9B-GGUF:Q4_K_M`) ; un dépôt privé passe par `HF_TOKEN` |
+| `LLAMA_IMAGE` | variable (facultative) | image de llama-server, `ghcr.io/ggml-org/llama.cpp:server-cuda` sur runner GPU |
+| `AGENT_MAX_STEPS` | variable (facultative) | nombre d'étapes de l'agent dans `pipeline.yml` (40) |
 
 ## Pratiques retenues
 

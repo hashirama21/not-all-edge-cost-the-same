@@ -1,8 +1,15 @@
 """Résolution d'entités : même entreprise, graphies différentes.
 
 1. Normalisation du nom (majuscules, sans accents, formes juridiques retirées de la clé).
-2. Fusion certaine sur identifiant (NIU, RCCM).
-3. Fusion floue par blocs (premier jeton significatif) avec rapidfuzz, seuil réglable.
+2. Fusion certaine sur identifiant (NIU, RCCM normalisés), sauf si un même identifiant
+   couvre plus de MAX_ID_GROUP noms différents (identifiant mal attribué, ex. celui du
+   maître d'ouvrage recopié sur chaque ligne) : ce groupe n'est pas fusionné.
+3. Fusion floue par blocs (premier jeton significatif, resserré sur deux jetons pour un
+   bloc trop gros) avec rapidfuzz, seuil réglable.
+
+Identifiant d'entité stable d'une version à l'autre : hachage du plus petit NIU de la
+composante s'il y en a un, sinon de sa clé la plus fréquente (égalité : ordre alphabétique).
+
 Un échantillon de paires fusionnées est exporté pour annotation manuelle : le taux
 d'erreur rapporté dans l'article se calcule sur cet échantillon.
 """
@@ -43,8 +50,21 @@ def name_key(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+MAX_ID_GROUP = 5
+MAX_BLOCK = 3000
+
+
 def is_groupement(name: str) -> bool:
-    return bool(GROUPEMENT_RE.search(normalize_name(name) if "/" not in (name or "") else name))
+    # Sur le nom brut en majuscules : normalize_name retire « / » et « + ».
+    return bool(GROUPEMENT_RE.search(strip_accents(name or "").upper()))
+
+
+def normalize_identifier(value) -> str | None:
+    """NIU / RCCM comparables : sans espaces ni ponctuation superflue, en majuscules."""
+    if not isinstance(value, str):
+        return None
+    s = re.sub(r"[\s.\-]", "", strip_accents(value).upper())
+    return s or None
 
 
 def split_groupement(name: str) -> list[str]:
@@ -77,35 +97,60 @@ def resolve(mentions: pd.DataFrame, threshold: int = 92) -> tuple[pd.DataFrame, 
     m = mentions.copy()
     m["nom_normalise"] = m["nom_brut"].map(normalize_name)
     m["cle"] = m["nom_brut"].map(name_key)
-    m = m[m["cle"].str.len() > 1]
+    m = m[m["cle"].str.len() > 1].copy()
     uf = _UF()
     for key in m["cle"].unique():
         uf.find(key)
+    suspect_niu: set[str] = set()
     for col in ("niu", "rccm"):
         if col in m:
-            for _, grp in m.dropna(subset=[col]).groupby(col):
+            m[col] = m[col].map(normalize_identifier)
+            for ident, grp in m.dropna(subset=[col]).groupby(col):
                 keys = grp["cle"].unique()
+                if len(keys) > MAX_ID_GROUP:
+                    if col == "niu":
+                        suspect_niu.add(ident)
+                    continue  # identifiant partagé par trop de noms : suspect, pas de fusion
                 for k in keys[1:]:
                     uf.union(keys[0], k)
 
+    pairs: list[dict] = []
+    _fuzzy_blocks(list(m["cle"].unique()), uf, pairs, threshold, depth=1)
+
+    roots = {k: uf.find(k) for k in m["cle"].unique()}
+    m["_root"] = m["cle"].map(roots)
+    canon: dict[str, str] = {}
+    for root, grp in m.groupby("_root"):
+        nius = sorted(set(grp["niu"].dropna()) - suspect_niu) if "niu" in grp else []
+        if nius:
+            canon[root] = "NIU:" + nius[0]
+        else:
+            counts = grp["cle"].value_counts()
+            canon[root] = sorted(counts[counts == counts.max()].index)[0]
+    m["entity_id"] = m["_root"].map(lambda r: "E" + _short_hash(canon[r]))
+    return m.drop(columns="_root"), pd.DataFrame(pairs, columns=["cle_a", "cle_b", "score"])
+
+
+def _block_key(key: str, depth: int) -> str:
+    toks = [t for t in key.split() if t not in STOP] or key.split()
+    return "|".join(t[:4] for t in toks[:depth])
+
+
+def _fuzzy_blocks(keys: list[str], uf: _UF, pairs: list[dict], threshold: int, depth: int) -> None:
     blocks: dict[str, list[str]] = defaultdict(list)
-    for key in m["cle"].unique():
-        toks = [t for t in key.split() if t not in STOP] or key.split()
-        blocks[toks[0][:4]].append(key)
-    pairs = []
-    for keys in blocks.values():
-        if len(keys) > 3000:  # bloc trop gros : on resserre sur deux jetons
+    for key in keys:
+        blocks[_block_key(key, depth)].append(key)
+    for bkey, members in blocks.items():
+        if len(members) > MAX_BLOCK:
+            if depth < 3:  # bloc trop gros : on resserre sur un jeton de plus
+                _fuzzy_blocks(members, uf, pairs, threshold, depth + 1)
             continue
-        for i, a in enumerate(keys):
-            for b in keys[i + 1:]:
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
                 score = fuzz.token_sort_ratio(a, b)
                 if score >= threshold and _digits(a) == _digits(b):
                     uf.union(a, b)
                     pairs.append({"cle_a": a, "cle_b": b, "score": score})
-
-    roots = {k: uf.find(k) for k in m["cle"].unique()}
-    m["entity_id"] = m["cle"].map(lambda k: "E" + _short_hash(roots[k]))
-    return m, pd.DataFrame(pairs)
 
 
 def _digits(s: str) -> str:

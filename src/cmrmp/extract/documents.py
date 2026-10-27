@@ -17,6 +17,7 @@ MIN_CHARS_PER_PAGE = 80  # en dessous, la page est probablement une image
 OCR_DPI = 300
 OCR_LANG = "fra+eng"
 MAX_TABLES = 200
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 
 def _tessdata() -> str | None:
@@ -147,6 +148,58 @@ def _ocr(path: Path) -> str:
             return "\n\f".join(page.get_text("text", sort=True) for page in doc)
 
 
+def doc_text(path: Path) -> tuple[str, dict]:
+    """Word 97-2003 (.doc) : antiword, sinon LibreOffice en mode sans interface."""
+    if shutil.which("antiword"):
+        res = subprocess.run(["antiword", "-m", "UTF-8.txt", str(path)], capture_output=True)
+        if res.returncode == 0:
+            return res.stdout.decode("utf-8", errors="replace"), {"converter": "antiword"}
+    office = shutil.which("soffice") or shutil.which("libreoffice")
+    if office:
+        with tempfile.TemporaryDirectory() as tmp:
+            res = subprocess.run([office, "--headless", "--convert-to", "txt:Text", "--outdir", tmp, str(path)],
+                                 capture_output=True, timeout=300)
+            out = Path(tmp) / (path.stem + ".txt")
+            if res.returncode == 0 and out.exists():
+                return out.read_text(encoding="utf-8", errors="replace"), {"converter": "libreoffice"}
+    log.warning("%s : .doc non lu (installer antiword ou LibreOffice)", path.name)
+    return "", {"unsupported": ".doc"}
+
+
+def spreadsheet_text(path: Path) -> tuple[str, dict]:
+    """Classeur Excel : une ligne de texte par ligne de feuille (« a | b | c »)."""
+    import pandas as pd
+
+    try:
+        sheets = pd.read_excel(path, dtype=str, sheet_name=None, header=None)
+    except Exception as exc:  # classeur corrompu ou format inattendu
+        log.warning("classeur illisible %s : %s", path.name, exc)
+        return "", {"error": str(exc)}
+    parts = []
+    for name, df in sheets.items():
+        parts.append(f"# {name}")
+        parts += [" | ".join(v for v in row if v) for row in df.fillna("").to_numpy().tolist() if any(row)]
+    return "\n".join(parts), {"sheets": list(sheets)}
+
+
+def image_text(path: Path) -> tuple[str, dict]:
+    """Image (communiqué scanné) : OCR par PyMuPDF + Tesseract si disponible."""
+    import pymupdf
+
+    tessdata = _tessdata()
+    if not tessdata:
+        log.info("Tesseract absent : %s reste sans OCR", path.name)
+        return "", {"ocr": False, "unsupported": path.suffix.lower()}
+    try:
+        with pymupdf.open(path) as img, pymupdf.open("pdf", img.convert_to_pdf()) as doc:
+            page = doc[0]
+            tp = page.get_textpage_ocr(language=OCR_LANG, dpi=OCR_DPI, full=True, tessdata=tessdata)
+            return page.get_text("text", textpage=tp, sort=True), {"ocr": True, "ocr_pages": 1, "pages": 1}
+    except Exception as exc:
+        log.warning("OCR impossible sur %s : %s", path.name, exc)
+        return "", {"ocr": False, "error": str(exc)}
+
+
 def docx_text(path: Path) -> str:
     import docx
 
@@ -191,6 +244,12 @@ def document_text(path: Path, content_type: str = "", ocr: bool = True) -> tuple
         return pdf_text(path, ocr=ocr)
     if suffix == ".docx":
         return docx_text(path), {}
+    if suffix == ".doc" or content_type.startswith("application/msword"):
+        return doc_text(path)
+    if suffix in (".xlsx", ".xls"):
+        return spreadsheet_text(path)
+    if suffix in IMAGE_SUFFIXES:
+        return image_text(path)
     if suffix in (".html", ".htm") or "html" in content_type:
         return html_text(path.read_text(encoding="utf-8", errors="replace")), {}
     if suffix in (".txt", ".json"):

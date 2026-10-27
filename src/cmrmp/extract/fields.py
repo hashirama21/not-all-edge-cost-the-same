@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date
+
+from ..time import utc_now_iso
 
 MOIS = {
     "janvier": 1, "fevrier": 2, "février": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
@@ -35,7 +37,11 @@ PROCEDURES = {
 }
 
 _SPACE = r"[\s  ]"
-_AMOUNT = rf"(\d{{1,3}}(?:(?:{_SPACE}|\.|,)?\d{{3}})+|\d+)"
+# Montant : groupes de trois chiffres avec un séparateur constant (« 3 100 500 », « 22.800.000 »)
+# ou chiffres collés, puis décimales facultatives (« ,00 »). Le premier groupe ne doit pas suivre
+# un chiffre : « exercice 2026 500 000 FCFA » donne 500 000, pas 2 026 500 000.
+_AMOUNT = (r"(?<![\d.,])(?P<amt>\d{1,3}(?P<sep>[\s  .,])\d{3}(?:(?P=sep)\d{3})*|\d+)"
+           r"(?:[.,]\d{1,2}(?!\d))?")
 _CURRENCY = r"(?:F\.?\s?CFA|FCFA|XAF|francs?\s+CFA|F\s?CFA|FRS?\s?CFA)"
 
 RE_REFERENCE = re.compile(
@@ -72,6 +78,10 @@ def parse_fcfa(raw: str) -> int | None:
     s = re.sub(r"(milliards?|millions?).*", "", s).strip()
     if mult > 1 and re.fullmatch(r"\d+[,.]\d+", s):
         return int(round(float(s.replace(",", ".")) * mult))
+    s = re.sub(r"\s*(?:f\.?\s?cfa|fcfa|xaf|frs?|francs?).*$", "", s).strip()
+    # Décimales finales (« 12 500 000,00 ») : un ou deux chiffres après la dernière virgule ou
+    # le dernier point, quand ce n'est pas un groupe de milliers.
+    s = re.sub(r"[.,]\d{1,2}$", "", s)
     digits = re.sub(r"\D", "", s)
     return int(digits) * mult if digits else None
 
@@ -80,7 +90,7 @@ def amounts(text: str) -> list[tuple[int, int, int]]:
     """Tous les montants en FCFA : (valeur, début, fin)."""
     out = []
     for m in re.finditer(rf"{_AMOUNT}{_SPACE}*(?:\)?{_SPACE}*)?{_CURRENCY}", text, re.IGNORECASE):
-        val = parse_fcfa(m.group(1))
+        val = parse_fcfa(m.group("amt"))
         if val:
             out.append((val, m.start(), m.end()))
     return out
@@ -191,34 +201,68 @@ def email_list(text: str) -> list[str]:
     return sorted({m.lower() for m in RE_EMAIL.findall(text)})
 
 
+_SANCTION = (r"exclu(?:sion|es?|s)?\s+(?:de\s+(?:la\s+)?)?(?:commande\s+publique|march[ée]s\s+publics)|"
+             r"\bsuspen(?:sion|dues?|dus?)\b|mise\s+en\s+demeure|r[ée]siliation|liste\s+rouge|"
+             r"\bd[ée]barment\b|\bblacklist")
+
+# L'ordre compte : le premier motif trouvé l'emporte. Les types les plus spécifiques (PV,
+# sanction) passent avant « décision » et « avis », dont les motifs (« attributaire »,
+# « appel d'offres ») figurent aussi dans les PV et les communiqués de sanction.
 DOC_TYPES = [
     ("additif", r"\badd?itif\b|\brectificatif\b|\bcorrigendum\b|\baddendum\b"),
     ("annulation", r"\bannulation\b|\bannul[ée]\b|\bcancell?ation\b"),
     ("infructueux", r"\binfructueu"),
+    ("pv_ouverture", r"proc[eè]s[\s\-]verbal\s+(?:de\s+(?:la\s+)?s[ée]ance\s+)?(?:d['’]\s*)?ouverture|\bpv\b.{0,30}ouverture|bid\s+opening\s+report"),
+    ("pv_jugement", r"proc[eè]s[\s\-]verbal\s+(?:de\s+(?:la\s+)?s[ée]ance\s+)?(?:de\s+)?(?:jugement|[ée]valuation|analyse)|rapport\s+d['’]analyse"),
+    ("sanction", _SANCTION),
     ("decision_attribution", r"d[ée]cision\s+(?:d['’]\s*)?attribution|attributaire|award\s+decision|communiqu[ée]\s+(?:de\s+)?r[ée]sultats?"),
-    ("pv_ouverture", r"proc[eè]s[\s\-]verbal\s+(?:d['’]\s*)?ouverture|\bpv\b.{0,30}ouverture|bid\s+opening\s+report"),
-    ("pv_jugement", r"proc[eè]s[\s\-]verbal\s+(?:de\s+)?(?:jugement|[ée]valuation|analyse)|rapport\s+d['’]analyse"),
     ("dao", r"dossier\s+d['’]\s*appel\s+d['’]\s*offres|\bDAO\b|tender\s+file"),
     ("avis", r"avis\s+d['’]\s*appel|appel\s+d['’]\s*offres|demande\s+de\s+cotation|manifestation\s+d['’]int[ée]r[eê]t|invitation\s+to\s+tender"),
-    ("sanction", r"exclu(?:sion|es?)\s+(?:de\s+la\s+)?commande\s+publique|suspen(?:sion|dues?)|mise\s+en\s+demeure|r[ée]siliation"),
 ]
 
 
 def classify(title: str, text: str = "") -> str:
-    head = f"{title}\n{text[:3000]}"
-    for label, pattern in DOC_TYPES:
-        if re.search(pattern, head, re.IGNORECASE):
-            return label
+    """Type du document : le titre seul d'abord (plus fiable), puis titre + début du texte."""
+    for head in (title or "", f"{title}\n{text[:3000]}"):
+        if not head.strip():
+            continue
+        for label, pattern in DOC_TYPES:
+            if re.search(pattern, head, re.IGNORECASE):
+                return label
     return "autre"
+
+
+def is_sanction(title: str, text: str = "") -> bool:
+    """Communiqué de sanction : mots-clés de sanction dans le titre ou le début du texte,
+    même si le document cite aussi un appel d'offres ou un attributaire."""
+    return bool(re.search(_SANCTION, f"{title}\n{text[:3000]}", re.IGNORECASE))
+
+
+def label_key(label: str) -> str:
+    """« MAÎTRE D'OUVRAGE » -> « maitre_d_ouvrage »."""
+    key = strip_accents(label).strip().lower()
+    return re.sub(r"[^a-z0-9]+", "_", key).strip("_")
 
 
 def label_values(text: str) -> dict[str, str]:
     """Paires « LIBELLÉ : valeur » (fiches ARMP : ATTRIBUTAIRE : X, MONTANT : Y, DELAI : Z)."""
     out: dict[str, str] = {}
     for m in re.finditer(r"(?m)^\s*([A-ZÉÈÀÂÎÔÛÇ][A-ZÉÈÀÂÎÔÛÇ '’/()\-]{2,60}?)\s*:\s*(.+?)\s*$", text):
-        key = strip_accents(m.group(1)).strip().lower().replace(" ", "_")
-        out.setdefault(key, m.group(2).strip())
+        out.setdefault(label_key(m.group(1)), m.group(2).strip())
     return out
+
+
+def normalize_lot(lot) -> str:
+    """Numéro de lot comparable entre documents : « Lot n°01 » -> « 1 », vide -> « unique »."""
+    if lot is None or (isinstance(lot, float) and lot != lot) or not str(lot).strip():
+        return "unique"
+    s = strip_accents(str(lot)).strip().upper()
+    m = re.fullmatch(r"(?:LOT\s*)?(?:N\s*[°ºO.]?\s*)?(\d+)(?:\b.*)?", s, re.S)
+    if m:
+        return str(int(m.group(1)))
+    if s in ("UNIQUE", "LOT UNIQUE", "SANS LOT"):
+        return "unique"
+    return re.sub(r"\s+", " ", s)
 
 
 _COL_NAME = re.compile(r"soumissionnaire|entreprise|raison\s+sociale|candidat|bidder|nom", re.I)
@@ -272,4 +316,6 @@ def avis_fields(text: str) -> dict:
 
 
 def today_iso() -> str:
-    return datetime.now().date().isoformat()
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).date().isoformat()

@@ -27,6 +27,10 @@ MODEL = os.environ.get("CMRMP_LLM_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("CMRMP_LLM_EFFORT", "low")  # extraction : effort bas suffit en général
 SCHEMA_VERSION = "2026-10-26"
 MAX_CHARS = 400_000
+MAX_TOKENS = 16_000            # requête simple (sous le délai HTTP du SDK)
+MAX_TOKENS_RETRY = 64_000      # nouvelle tentative en streaming si la sortie a été coupée
+# 32 Mo par requête, base64 compris (+33 %) : au-delà de 22 Mo, on envoie des pages rendues.
+MAX_PDF_BYTES = 22_000_000
 
 
 class Montant(BaseModel):
@@ -141,8 +145,55 @@ def _cache_path(doc_sha: str, kind: str) -> Path:
     return data_dir("llm_cache") / f"{key}.json"
 
 
+def _log_error(doc_sha: str, kind: str, reason: str, **extra) -> None:
+    from ..sources.common import interim
+    from ..storage import append_jsonl
+
+    append_jsonl(interim("extract_llm_errors.jsonl"), {"doc_id": doc_sha, "kind": kind, "reason": reason,
+                                                        "model": MODEL, "schema_version": SCHEMA_VERSION, **extra})
+
+
+def _request(client, schema: type[BaseModel], content: list[dict], max_tokens: int):
+    """Un seul point d'appel à l'API.
+
+    `output_format` est le paramètre du helper `parse` / `stream` du SDK : il prend le
+    modèle Pydantic et le convertit en `output_config.format` sur le fil (vérifié sur
+    anthropic 2.3.0, `merge_output_config`) ; on passe donc l'effort dans `output_config`
+    et le schéma par `output_format`, sans conflit. Au-delà de MAX_TOKENS, on passe en
+    streaming pour ne pas dépasser le délai HTTP."""
+    params = dict(
+        model=MODEL,
+        max_tokens=max_tokens,
+        system=SYSTEM,
+        messages=[{"role": "user", "content": content}],
+        output_format=schema,
+        output_config={"effort": EFFORT},
+        # Repli côté serveur si le modèle décline la requête.
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+    )
+    if max_tokens > MAX_TOKENS:
+        with client.beta.messages.stream(**params) as stream:
+            return stream.get_final_message()
+    return client.beta.messages.parse(**params)
+
+
+def _parsed(resp, schema: type[BaseModel]):
+    parsed = getattr(resp, "parsed_output", None)
+    if parsed is not None:
+        return parsed
+    text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+    try:
+        return schema.model_validate_json(text) if text else None
+    except ValueError:
+        return None
+
+
 def extract(doc_sha: str, kind: str, text: str, pdf_path: Path | None = None) -> dict | None:
-    """Renvoie le dict extrait (avec métadonnées) ou None si le type n'a pas de schéma."""
+    """Renvoie le dict extrait (avec métadonnées) ou None si le type n'a pas de schéma.
+
+    Les échecs (refus, sortie coupée, requête rejetée) sont consignés dans
+    interim/extract/extract_llm_errors.jsonl et ne sont pas mis en cache."""
     schema = SCHEMAS.get(kind)
     if schema is None:
         return None
@@ -154,10 +205,11 @@ def extract(doc_sha: str, kind: str, text: str, pdf_path: Path | None = None) ->
 
     client = anthropic.Anthropic()
     content: list[dict] = []
+    truncated = False
     if pdf_path is not None and len(text.strip()) < 200:
         # PDF scanné sans OCR local : Claude lit le PDF, ou les pages rendues par PyMuPDF
         # quand le fichier dépasse la taille admise pour un document.
-        if pdf_path.stat().st_size < 30_000_000:
+        if pdf_path.stat().st_size <= MAX_PDF_BYTES:
             content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                             "data": base64.standard_b64encode(pdf_path.read_bytes()).decode()}})
         else:
@@ -169,36 +221,41 @@ def extract(doc_sha: str, kind: str, text: str, pdf_path: Path | None = None) ->
         content.append({"type": "text", "text": f"Type de document : {kind}. Extrais les champs du schéma."})
     else:
         if len(text) > MAX_CHARS:
+            truncated = True
             log.warning("document %s tronqué de %s à %s caractères", doc_sha[:12], len(text), MAX_CHARS)
         content.append({"type": "text", "text": f"Type de document : {kind}.\n<document>\n{text[:MAX_CHARS]}\n</document>"})
 
-    try:
-        resp = client.beta.messages.parse(
-            model=MODEL,
-            max_tokens=16000,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": content}],
-            output_format=schema,
-            output_config={"effort": EFFORT},
-            # Repli côté serveur si le modèle décline la requête.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
-    except anthropic.BadRequestError as exc:
-        log.error("requête refusée pour %s : %s", doc_sha[:12], exc)
-        return None
-    except anthropic.RateLimitError:
-        raise  # le SDK a déjà réessayé ; on laisse l'appelant ralentir
-    except anthropic.APIConnectionError as exc:
-        log.error("connexion API impossible : %s", exc)
-        return None
+    resp = parsed = None
+    for max_tokens in (MAX_TOKENS, MAX_TOKENS_RETRY):
+        try:
+            resp = _request(client, schema, content, max_tokens)
+        except anthropic.BadRequestError as exc:
+            log.error("requête refusée pour %s : %s", doc_sha[:12], exc)
+            _log_error(doc_sha, kind, "bad_request", detail=str(exc)[:500])
+            return None
+        except anthropic.RateLimitError:
+            raise  # le SDK a déjà réessayé ; on laisse l'appelant ralentir
+        except anthropic.APIConnectionError as exc:
+            log.error("connexion API impossible : %s", exc)
+            _log_error(doc_sha, kind, "connection", detail=str(exc)[:500])
+            return None
+        if resp.stop_reason != "max_tokens":
+            break
+        log.warning("sortie coupée pour %s à %s jetons", doc_sha[:12], max_tokens)
 
-    if resp.stop_reason == "refusal" or resp.parsed_output is None:
+    if resp.stop_reason == "max_tokens":
+        _log_error(doc_sha, kind, "max_tokens", max_tokens=MAX_TOKENS_RETRY)
+        return None
+    if resp.stop_reason != "refusal":
+        parsed = _parsed(resp, schema)
+    if parsed is None:
         log.warning("pas de sortie pour %s (stop_reason=%s)", doc_sha[:12], resp.stop_reason)
+        _log_error(doc_sha, kind, resp.stop_reason or "no_output")
         return None
     result = {
         "kind": kind, "schema_version": SCHEMA_VERSION, "model": resp.model,
-        "stop_reason": resp.stop_reason, "data": resp.parsed_output.model_dump(mode="json"),
+        "stop_reason": resp.stop_reason, "data": parsed.model_dump(mode="json"),
+        "tronque": truncated, "n_chars_envoyes": min(len(text), MAX_CHARS), "n_chars_document": len(text),
         "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens},
     }
     cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

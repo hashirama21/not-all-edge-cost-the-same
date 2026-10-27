@@ -61,6 +61,21 @@ coleps:
   start_urls: ["https://www.marchespublics.cm", "https://www.publiccontracts.cm"]
   allowed_domains: ["marchespublics.cm", "*.marchespublics.cm", "publiccontracts.cm", "*.publiccontracts.cm"]
 
+agent:
+  # Modèle de l'agent browser-use. « llamacpp » : serveur llama.cpp local (API compatible
+  # OpenAI) lancé par scripts/llama_server.sh ; « anthropic » : Claude (ANTHROPIC_API_KEY).
+  # Variables prioritaires : CMRMP_AGENT_BACKEND, LLAMA_BASE_URL, CMRMP_AGENT_MODEL, CMRMP_AGENT_VISION.
+  backend: llamacpp
+  base_url: "http://127.0.0.1:8080/v1"
+  model: "local"                  # alias donné au modèle par llama-server (--alias)
+  anthropic_model: "claude-opus-5-5"
+  use_vision: false               # true seulement avec un GGUF multimodal (fichier mmproj)
+  flash_mode: true                # pas de raisonnement intermédiaire : moins de jetons sur CPU
+  max_actions_per_step: 3
+  llm_timeout_s: 900              # un pas d'agent sur CPU peut prendre plusieurs minutes
+  step_timeout_s: 1200
+  max_completion_tokens: 4096
+
 costs:
   # Coût d'opportunité annuel de la caution immobilisée (taux débiteur indicatif CEMAC).
   caution_rate_annual: 0.12

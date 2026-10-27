@@ -20,7 +20,7 @@ from ..config import settings
 from ..extract import fields
 from ..extract.documents import html_tables, html_text
 from ..http import PoliteClient
-from ..storage import append_jsonl
+from ..storage import append_jsonl_unique, relative_path
 from .common import absolute_links, document_links, interim, queue_documents
 
 log = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ def crawl_details(types: list[str] | None = None, start: int | None = None, end:
                     "amounts_fcfa": [a[0] for a in fields.amounts(text)][:50],
                     "documents": docs, "fetched_at": cap.fetched_at,
                 }
-                append_jsonl(interim("armp_details.jsonl"), rec)
+                append_jsonl_unique(interim("armp_details.jsonl"), rec, key=lambda r: r["url"])
                 queue_documents("armp", url, docs, {"reference": rec["reference"], "type_publication": type_})
                 n += 1
     return n
@@ -110,13 +110,13 @@ def crawl_pridesoft(types: list[str] | None = None, start: int | None = None, en
                     docs = document_links(links)
                 rec = {
                     "source": "pridesoft", "type_avis": type_, "id": rid, "url": url,
-                    "content_type": cap.content_type, "path": cap.path, "text": text[:30000],
+                    "content_type": cap.content_type, "path": relative_path(cap.path), "text": text[:30000],
                     "label_values": fields.label_values(text) if text else {},
                     "tables": html_tables(cap.text()) if text else [],
                     "reference": fields.reference(text) if text else None,
                     "documents": docs, "fetched_at": cap.fetched_at,
                 }
-                append_jsonl(interim("pridesoft_reports.jsonl"), rec)
+                append_jsonl_unique(interim("pridesoft_reports.jsonl"), rec, key=lambda r: r["url"])
                 queue_documents("pridesoft", url, docs, {"reference": rec["reference"]})
                 n += 1
     return n
@@ -140,6 +140,6 @@ def crawl_jdm(start: int | None = None, end: int | None = None) -> int:
         for num in range(start or lo, (end or hi) + 1):
             cap = http.fetch(cfg["pdf_url"].format(num=num))
             if cap and "pdf" in cap.content_type:
-                append_jsonl(interim("jdm_documents_queue.jsonl"), {"source": "jdm", "url": cap.url, "title": f"JDM {num}", "referer": ""})
+                append_jsonl_unique(interim("jdm_documents_queue.jsonl"), {"source": "jdm", "url": cap.url, "title": f"JDM {num}", "referer": ""}, key=lambda r: r["url"])
                 n += 1
     return n

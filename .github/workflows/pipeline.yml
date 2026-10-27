@@ -23,6 +23,11 @@ on:
         description: "Dataset public (sinon privé)"
         type: boolean
         default: false
+      coleps_explore:
+        description: "Cartographier COLEPS avec l'agent (auto : seulement sans carte)"
+        type: choice
+        options: [auto, always, never]
+        default: auto
 
 concurrency:
   group: pipeline
@@ -79,23 +84,75 @@ jobs:
         run: scripts/step.sh "HF ${{ matrix.source }}" cmrmp hf check --bucket "$HF_BUCKET"
       - name: Cache depuis le bucket
         if: steps.sel.outputs.run == 'true'
-        run: scripts/step.sh "Pull ${{ matrix.source }}" cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+        run: |
+          extra=""
+          if [ "${{ matrix.source }}" = "coleps" ]; then extra="--path sitemaps"; fi
+          scripts/step.sh "Pull ${{ matrix.source }}" cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}" $extra
+      # --- COLEPS : carte par l'agent browser-use, sur le modèle local llama.cpp ---------------
+      - name: Carte COLEPS à produire ?
+        id: map
+        if: steps.sel.outputs.run == 'true' && matrix.source == 'coleps'
+        run: |
+          mode="${{ github.event.inputs.coleps_explore || 'auto' }}"
+          # Une carte est utilisable si elle passe le schéma de l'agent (une sortie d'échec ne compte pas).
+          valid=false
+          for f in config/sitemaps/coleps.json data/sitemaps/coleps.json; do
+            if [ -f "$f" ] && python -c "import sys; from cmrmp.sources.coleps import load_sitemap; load_sitemap(sys.argv[1])" "$f"; then valid=true; break; fi
+          done
+          if [ "$mode" = "always" ] || { [ "$mode" = "auto" ] && [ "$valid" = "false" ]; }; then
+            echo "explore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "explore=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Installation de l'agent (environnement séparé, conflit click / huggingface_hub)
+        if: steps.map.outputs.explore == 'true'
+        run: |
+          python -m venv .venv-agent
+          .venv-agent/bin/pip install -e ".[agent,browser]"
+          .venv-agent/bin/python -m playwright install --with-deps chromium
+      - name: Modèle local llama.cpp
+        if: steps.map.outputs.explore == 'true'
+        uses: ./.github/actions/llama-server
+        with:
+          model: ${{ vars.LLAMA_MODEL || 'unsloth/Qwen3.5-9B-GGUF:Q4_K_M' }}
+          image: ${{ vars.LLAMA_IMAGE || 'ghcr.io/ggml-org/llama.cpp:server' }}
+      - name: Exploration COLEPS par l'agent
+        if: steps.map.outputs.explore == 'true'
+        env:
+          CMRMP_AGENT_BACKEND: llamacpp
+          LLAMA_BASE_URL: http://127.0.0.1:8080/v1
+        run: |
+          scripts/step.sh "Check llama" .venv-agent/bin/cmrmp agent check
+          scripts/step.sh "Agent COLEPS" timeout 150m .venv-agent/bin/cmrmp agent explore --out data/sitemaps/coleps.json --max-steps "${{ vars.AGENT_MAX_STEPS || '40' }}"
+          docker rm -f cmrmp-llama >/dev/null 2>&1 || true
+          echo "CRAWL_TIMEOUT=160m" >> "$GITHUB_ENV"
+      - name: Carte produite par l'agent (à relire puis versionner dans config/sitemaps/)
+        if: always() && steps.map.outputs.explore == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sitemap-coleps
+          path: data/sitemaps/
+          if-no-files-found: ignore
+      # -----------------------------------------------------------------------------------------
       - name: Collecte
         if: steps.sel.outputs.run == 'true'
         run: |
-          S="scripts/step.sh Collecte-${{ matrix.source }} timeout 320m"
+          S="scripts/step.sh Collecte-${{ matrix.source }} timeout ${CRAWL_TIMEOUT:-320m}"
           case "${{ matrix.source }}" in
             katika)    $S cmrmp crawl katika --years "${{ github.event.inputs.years || '2018-2026' }}" ;;
             armp)      $S cmrmp crawl armp ;;
             pridesoft) $S cmrmp crawl pridesoft ;;
             minmap)    $S cmrmp crawl minmap ;;
             coleps)
-              if [ -f config/sitemaps/coleps.json ]; then $S cmrmp crawl coleps
-              else echo "::notice::config/sitemaps/coleps.json absent : lancez le workflow agent-explore puis versionnez la carte relue"; fi ;;
+              if [ -f config/sitemaps/coleps.json ] || [ -f data/sitemaps/coleps.json ]; then $S cmrmp crawl coleps
+              else echo "::notice::aucune carte COLEPS : l'agent n'a rien produit (voir l'artefact sitemap-coleps)"; fi ;;
           esac
       - name: Envoi vers le bucket
         if: always() && steps.sel.outputs.run == 'true'
-        run: scripts/step.sh "Push ${{ matrix.source }}" cmrmp hf push --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}"
+        run: |
+          extra=""
+          if [ "${{ matrix.source }}" = "coleps" ]; then extra="--path sitemaps"; fi
+          scripts/step.sh "Push ${{ matrix.source }}" cmrmp hf push --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}" $extra
 
   documents:
     needs: crawl

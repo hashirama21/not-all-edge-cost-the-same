@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlsplit
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 
 from ..config import data_dir
-from ..storage import append_jsonl
+from ..storage import append_jsonl_unique
 
 DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?|zip)(\?|#|$)", re.IGNORECASE)
 
@@ -79,11 +79,12 @@ def document_links(links: list[dict], pattern: str | None = None) -> list[dict]:
 
 
 def queue_documents(source: str, referer: str, links: list[dict], context: dict | None = None) -> None:
+    """Met en file chaque document une seule fois par source, même après une relance."""
     for link in links:
-        append_jsonl(interim(f"{source}_documents_queue.jsonl"), {
+        append_jsonl_unique(interim(f"{source}_documents_queue.jsonl"), {
             "source": source, "url": link["url"], "title": link.get("text", ""),
             "referer": referer, **(context or {}),
-        })
+        }, key=lambda r: r["url"])
 
 
 def describe_page(html: str, base_url: str) -> dict:

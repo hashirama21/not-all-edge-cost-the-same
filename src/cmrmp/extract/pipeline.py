@@ -16,7 +16,7 @@ from . import documents, fields
 
 log = logging.getLogger(__name__)
 
-DOC_SUFFIXES = {".pdf", ".docx", ".doc", ".html", ".htm"}
+DOC_SUFFIXES = {".pdf", ".docx", ".doc", ".html", ".htm", ".xlsx", ".xls", *documents.IMAGE_SUFFIXES}
 
 
 def _text_path(sha: str) -> Path:
@@ -62,6 +62,9 @@ def _one(cap) -> dict | None:
 
 def run(llm: bool = False, workers: int = 4, llm_types: tuple[str, ...] = ("avis", "dao", "pv_ouverture", "pv_jugement", "decision_attribution", "sanction")) -> pd.DataFrame:
     caps = [c for c in iter_manifest() if c.status == 200]
+    missing = [c for c in caps if Path(c.path).suffix.lower() in DOC_SUFFIXES and not Path(c.path).exists()]
+    if missing:  # brut absent (cache incomplet) : on le signale au lieu de l'ignorer
+        log.warning("%s documents du manifeste introuvables sur disque (ex. %s)", len(missing), missing[0].path)
     with ThreadPoolExecutor(workers) as pool:
         rows = [r for r in pool.map(_one, caps) if r]
     if not rows:
@@ -74,6 +77,13 @@ def run(llm: bool = False, workers: int = 4, llm_types: tuple[str, ...] = ("avis
             for r in rows for b in (r.get("tab_soumissions") or [])]
     pd.DataFrame(bids).to_parquet(interim("extract_table_bids.parquet"), index=False)
     df = df.drop(columns=["tab_soumissions"], errors="ignore")
+    # Add provenance timestamps
+    try:
+        from . import documents as _docs
+        from ..time import utc_now_iso
+        df["extracted_at_utc"] = utc_now_iso("seconds")
+    except Exception:
+        pass
     out = interim("extract_documents.parquet")
     df.to_parquet(out, index=False)
     log.info("%s documents -> %s", len(df), out)

@@ -93,7 +93,15 @@ def crawl_minmap():
 def crawl_coleps(sitemap: Path = typer.Option(None), max_pages: int = 500):
     from .sources import coleps
 
-    typer.echo(f"{coleps.crawl(sitemap or coleps.default_sitemap_path(), max_pages)} items")
+    path = sitemap or coleps.default_sitemap_path()
+    if not path.exists():
+        typer.echo(f"carte absente : {path} (lancez `cmrmp agent explore`)", err=True)
+        raise typer.Exit(1)
+    try:
+        typer.echo(f"{coleps.crawl(path, max_pages)} items")
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
 
 
 @crawl_app.command("documents")
@@ -106,15 +114,31 @@ def crawl_documents(limit: int = None):
 
 @agent_app.command("explore")
 def agent_explore(url: str = typer.Argument(None), out: Path = typer.Option(None), max_steps: int = 60):
-    """Cartographie un site avec browser-use + Claude (COLEPS par défaut)."""
+    """Cartographie un site avec browser-use (modèle llama.cpp local ou Claude ; COLEPS par défaut)."""
     from .agents import browser_agent
-    from .config import settings
-    from .sources.coleps import default_sitemap_path
+    from .config import data_dir, settings
 
     cfg = settings()["coleps"]
     url = url or cfg["start_urls"][0]
-    res = browser_agent.run(url, cfg["allowed_domains"], out or default_sitemap_path(), max_steps)
-    typer.echo(res.model_dump_json(indent=2) if res else "aucune carte produite : voir le fichier de sortie")
+    # Sortie par défaut : data/sitemaps (la carte relue de config/sitemaps n'est jamais écrasée).
+    res = browser_agent.run(url, cfg["allowed_domains"], out or data_dir("sitemaps") / "coleps.json", max_steps)
+    if not res:
+        typer.echo("aucune carte produite : voir le fichier de sortie", err=True)
+        raise typer.Exit(1)
+    typer.echo(res.model_dump_json(indent=2))
+
+
+@agent_app.command("check")
+def agent_check(base_url: str = typer.Option(None, help="ex. http://127.0.0.1:8080/v1")):
+    """Vérifie le serveur llama.cpp : santé et sortie structurée (schéma JSON)."""
+    from .agents import browser_agent
+
+    url = base_url or browser_agent.agent_settings()["base_url"]
+    try:
+        typer.echo(json.dumps(browser_agent.check_llm(url), ensure_ascii=False))
+    except Exception as exc:
+        typer.echo(f"llama-server inutilisable sur {url} : {exc}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -129,11 +153,28 @@ def extract(llm: bool = typer.Option(False, help="extraction structurée par Cla
 def build():
     """Tables, résolution d'entités, graphe, signaux d'alerte, coûts."""
     from .build import graph, tables
+    from .time import run_meta, utc_now_iso
 
+    meta = run_meta()
     t = tables.build_all()
     t["aretes"] = graph.edges(t)
     t["signaux_alerte"] = graph.red_flags(t)
     t["couts_relations"], t["couts_marches"] = graph.relation_costs(t, t["aretes"])
+    # Add build metadata to a lightweight manifest
+    try:
+        import json
+        from .config import data_dir
+        manifest = data_dir("processed") / "build_meta.json"
+        existing = {}
+        if manifest.exists():
+            try:
+                existing = json.loads(manifest.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+        meta_out = {**existing, **meta, "built_at_utc": utc_now_iso("seconds")}
+        manifest.write_text(json.dumps(meta_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     out = tables.write(t)
     typer.echo(f"tables écrites dans {out}")
 
@@ -167,6 +208,13 @@ def audit():
     out = data_dir("reports") / "audit.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     typer.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    # Also run provenance audit
+    try:
+        from . import audit_provenance
+        prov = audit_provenance.audit_provenance()
+        typer.echo(json.dumps(prov, ensure_ascii=False, indent=2))
+    except Exception as e:
+        typer.echo(f"provenance audit failed: {e}", err=True)
 
 
 @hf_app.command("publish")

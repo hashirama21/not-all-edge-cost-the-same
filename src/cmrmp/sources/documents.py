@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import defaultdict
 from urllib.parse import urlsplit
 
-from ..http import PoliteClient, RobotsDisallowed
 from ..config import data_dir
+from ..http import PoliteClient, RobotsDisallowed
+from ..storage import read_jsonl
 
 log = logging.getLogger(__name__)
 
@@ -16,12 +16,10 @@ log = logging.getLogger(__name__)
 def pending() -> list[dict]:
     seen, out = set(), []
     for path in sorted(data_dir("interim").glob("*/*_documents_queue.jsonl")):
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                rec = json.loads(line)
-                if rec["url"] not in seen:
-                    seen.add(rec["url"])
-                    out.append(rec)
+        for rec in read_jsonl(path):
+            if rec.get("url") and rec["url"] not in seen:
+                seen.add(rec["url"])
+                out.append(rec)
     return out
 
 

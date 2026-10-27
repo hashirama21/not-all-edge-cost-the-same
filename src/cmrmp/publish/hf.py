@@ -23,8 +23,13 @@ from pathlib import Path
 import pandas as pd
 
 from ..config import data_dir
+from ..time import utc_now
 
-PERSONAL_COLS = {"representant", "telephone", "email", "representants", "telephones", "emails"}
+PERSONAL_COLS = {"representant", "telephone", "email", "adresse",
+                 "representants", "telephones", "emails", "adresses"}
+# Arêtes dont l'`evidence` est une donnée personnelle (un entrepreneur individuel est domicilié
+# à son adresse personnelle).
+PERSONAL_RELATIONS = ["meme_dirigeant", "meme_telephone", "meme_email", "meme_adresse"]
 
 TABLE_DESCRIPTIONS = {
     "publications": "Index brut des publications (Katika237, ARMP, PRIDESOFT) : une ligne par item listé.",
@@ -54,7 +59,7 @@ def pseudonymize(df: pd.DataFrame, salt: str) -> pd.DataFrame:
             return h(v)
         df[col] = df[col].map(anon)
     if {"relation", "evidence"} <= set(df.columns):
-        personal = df["relation"].isin(["meme_dirigeant", "meme_telephone", "meme_email"])
+        personal = df["relation"].isin(PERSONAL_RELATIONS)
         df.loc[personal, "evidence"] = df.loc[personal, "evidence"].map(h)
     return df
 
@@ -62,7 +67,7 @@ def pseudonymize(df: pd.DataFrame, salt: str) -> pd.DataFrame:
 def dataset_card(repo_id: str, tables: dict[str, int]) -> str:
     configs = "\n".join(f"- config_name: {t}\n  data_files: data/{t}.parquet" for t in tables)
     rows = "\n".join(f"| `{t}` | {n:,} | {TABLE_DESCRIPTIONS.get(t, '')} |" for t, n in tables.items())
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = utc_now().strftime("%Y-%m-%d")
     return f"""---
 language: [fr, en]
 license: cc-by-4.0
@@ -126,9 +131,10 @@ def publish(repo_id: str, bucket_id: str | None = None, private: bool = True, sa
 
     api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
     api.upload_folder(repo_id=repo_id, repo_type="dataset", folder_path=str(stage.parent),
-                      commit_message=f"Mise à jour {datetime.now(timezone.utc):%Y-%m-%d}")
+                      commit_message=f"Mise à jour {utc_now():%Y-%m-%d}")
     if bucket_id:
-        sync_raw(bucket_id, direction="up", private=private)
+        # Seul le dataset pseudonymisé peut devenir public ; le brut reste privé.
+        sync_raw(bucket_id, direction="up")
 
 
 def sync_raw(bucket_id: str, direction: str = "up", private: bool = True, paths: list[str] | None = None) -> None:
@@ -137,12 +143,18 @@ def sync_raw(bucket_id: str, direction: str = "up", private: bool = True, paths:
     `paths` vaut par défaut tout le cache (raw, interim, text, llm_cache). Une tâche de
     collecte ne synchronise que ses dossiers (raw/<source>, interim/<source>) : plusieurs
     tâches peuvent tourner en parallèle sans s'écraser.
+
+    Le bucket est toujours créé privé : il contient le brut non pseudonymisé (PDF avec
+    téléphones et dirigeants, pages DGI de personnes physiques, cache LLM). `private=False`
+    est ignoré.
     """
     from huggingface_hub import HfApi
 
     api = HfApi()
     if direction == "up":
-        api.create_bucket(bucket_id, private=private, exist_ok=True)
+        if not private:
+            print("bucket brut : publication publique refusée, il reste privé (données personnelles non pseudonymisées)")
+        api.create_bucket(bucket_id, private=True, exist_ok=True)
     for sub in paths or ["raw", "interim", "text", "llm_cache"]:
         local = str(data_dir(*sub.split("/")))
         remote = f"hf://buckets/{bucket_id}/{sub}"

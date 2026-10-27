@@ -33,7 +33,7 @@ from ..config import data_dir, settings
 from ..extract.documents import html_tables, pdf_text
 from ..extract.fields import RE_NIU, strip_accents
 from ..http import PoliteClient, RobotsDisallowed
-from ..storage import append_jsonl
+from ..storage import append_jsonl_unique, read_jsonl, relative_path, resolve_path
 from .common import absolute_links, document_links
 
 log = logging.getLogger(__name__)
@@ -190,8 +190,8 @@ class Consultation:
             html = cap.text()
             rows = result_rows(html, {"source": "consultation", "url": self.url, "requete": tag,
                                       "page": page_no, "fetched_at": cap.fetched_at})
-            for r in rows:
-                append_jsonl(self.out, r)
+            for r in rows:  # une relance relit le cache : pas de doublon dans le fichier
+                append_jsonl_unique(self.out, r, key=lambda x: (x["niu"], x.get("requete")))
             n += len(rows)
             self._exports(cap, html, tag)
             form = parse_form(html, cap.final_url)
@@ -234,8 +234,9 @@ class Consultation:
         if cap is None or "html" in cap.content_type:
             return
         self.exports.append(cap.path)
-        append_jsonl(data_dir("interim", "dgi") / "dgi_exports.jsonl",
-                     {"path": cap.path, "url": cap.final_url, "content_type": cap.content_type, "requete": tag})
+        append_jsonl_unique(data_dir("interim", "dgi") / "dgi_exports.jsonl",
+                            {"path": relative_path(cap.path), "url": cap.final_url, "content_type": cap.content_type,
+                             "requete": tag}, key=lambda x: (x["path"], x["requete"]))
 
     def run(self) -> int:
         cap = self.http.fetch(self.url)
@@ -331,7 +332,7 @@ def crawl_official(**client_kw) -> int:
             rows = rows_from_file(Path(cap.path), {"source": "fichier_officiel", "url": f["url"], "statut_liste": f["statut"],
                                                    "date_reference": f.get("date_reference"), "fetched_at": cap.fetched_at})
             for r in rows:
-                append_jsonl(out, r)
+                append_jsonl_unique(out, r, key=lambda x: (x["url"], x["niu"], x.get("page"), x.get("feuille")))
             n += len(rows)
             log.info("%s : %s lignes", f["url"], len(rows))
     return n
@@ -344,10 +345,7 @@ def _statut_from(text: str) -> str:
 
 # --------------------------------------------------------------------------- fichier unifié
 def _read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh if line.strip()]
+    return read_jsonl(path)
 
 
 def unify() -> pd.DataFrame:
@@ -356,7 +354,7 @@ def unify() -> pd.DataFrame:
     base = data_dir("interim", "dgi")
     rows = _read_jsonl(base / "dgi_consultation_rows.jsonl") + _read_jsonl(base / "dgi_official_rows.jsonl")
     for exp in _read_jsonl(base / "dgi_exports.jsonl"):
-        rows += rows_from_file(Path(exp["path"]), {"source": "export_consultation", "url": exp["url"], "requete": exp["requete"]})
+        rows += rows_from_file(Path(resolve_path(exp["path"])), {"source": "export_consultation", "url": exp["url"], "requete": exp["requete"]})
     cols = list(COLUMNS)
     if not rows:
         return pd.DataFrame(columns=["niu", *cols[1:], "type_personne", "statut_listes", "sources", "n_sources"])
@@ -410,7 +408,10 @@ def write_unified(df: pd.DataFrame, salt: str | None, keep_natural_persons: bool
 
 
 def publish_bucket(bucket_id: str, private: bool = True) -> None:
-    """Envoie data/dgi (fichier unifié) et le brut DGI dans le bucket Hugging Face."""
+    """Envoie data/dgi (fichier unifié) et le brut DGI dans le bucket Hugging Face.
+
+    Le bucket reste privé quel que soit `private` : raw/dgi et interim/dgi contiennent les
+    personnes physiques en clair (voir publish.hf.sync_raw)."""
     from ..publish.hf import sync_raw
 
     sync_raw(bucket_id, direction="up", private=private, paths=["dgi", "raw/dgi", "interim/dgi"])

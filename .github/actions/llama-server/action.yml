@@ -1,0 +1,41 @@
+name: llama-server
+description: Lance le modèle local llama.cpp (API compatible OpenAI) pour l'agent browser-use, avec cache du GGUF.
+
+inputs:
+  model:
+    description: "Dépôt GGUF Hugging Face, utilisateur/depot[:quant]"
+    required: true
+  image:
+    description: "Image Docker de llama-server"
+    default: "ghcr.io/ggml-org/llama.cpp:server"
+  ctx:
+    description: "Taille de contexte"
+    default: "32768"
+  extra_args:
+    description: "Options supplémentaires de llama-server"
+    default: ""
+
+outputs:
+  base_url:
+    description: "URL de l'API compatible OpenAI"
+    value: http://127.0.0.1:8080/v1
+
+runs:
+  using: composite
+  steps:
+    - name: Cache du modèle GGUF
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/llama.cpp
+        key: llama-gguf-${{ inputs.model }}
+    - name: Démarrage de llama-server
+      shell: bash
+      env:
+        LLAMA_MODEL: ${{ inputs.model }}
+        LLAMA_IMAGE: ${{ inputs.image }}
+        LLAMA_CTX: ${{ inputs.ctx }}
+        LLAMA_EXTRA_ARGS: ${{ inputs.extra_args }}
+      run: LLAMA_CACHE_DIR="$HOME/.cache/llama.cpp" bash scripts/llama_server.sh
+    - name: Droits sur le cache (fichiers écrits par le conteneur root)
+      shell: bash
+      run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cache/llama.cpp" || true

@@ -19,7 +19,7 @@ from ..config import settings
 from ..extract import fields
 from ..extract.documents import html_text
 from ..http import PoliteClient
-from ..storage import append_jsonl
+from ..storage import append_jsonl_unique
 from .common import absolute_links, document_links, interim, queue_documents
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,10 @@ def crawl() -> int:
                 url = f"{cfg['wp_api']}?search={quote_plus(term)}&per_page=50&page={page}&_fields=id,date,link,title,content"
                 cap = http.fetch(url)
                 if cap is None or "json" not in cap.content_type:
-                    n += _crawl_html_search(http, cfg, term)
+                    # Au-delà de la dernière page, WordPress répond 400 : c'est la fin de la
+                    # pagination. Le repli HTML ne sert que si l'API ne répond pas dès la page 1.
+                    if page == 1:
+                        n += _crawl_html_search(http, cfg, term)
                     break
                 try:
                     posts = json.loads(cap.text())
@@ -69,17 +72,20 @@ def _crawl_html_search(http: PoliteClient, cfg: dict, term: str) -> int:
 
 def _record(url: str, title: str, html: str, published: str | None) -> int:
     text = html_text(html)
-    if fields.classify(title, text) != "sanction":
+    title_text = HTMLParser(title).text() if title else ""
+    # Un communiqué de sanction cite souvent l'appel d'offres ou l'attributaire : on ne
+    # demande que la présence de mots-clés de sanction, pas le type « dominant ».
+    if not fields.is_sanction(title_text, text):
         return 0
     links = absolute_links(HTMLParser(html).root, url or "")
     docs = document_links(links) + [l for l in links if re.search(r"\.(jpe?g|png)$", l["url"], re.I)]
     duree = RE_DUREE.search(text)
-    append_jsonl(interim("minmap_sanctions_raw.jsonl"), {
-        "source": SOURCE, "url": url, "title": HTMLParser(title).text() if title else "",
+    written = append_jsonl_unique(interim("minmap_sanctions_raw.jsonl"), {
+        "source": SOURCE, "url": url, "title": title_text,
         "published": published, "text": text[:50000],
         "duree": " ".join(duree.groups()) if duree else None,
         "entreprises_regex": [m.strip() for m in RE_LIST_ITEM.findall(text)][:2000],
         "documents": docs,
-    })
+    }, key=lambda r: r["url"])
     queue_documents(SOURCE, url, docs, {"kind": "sanction"})
-    return 1
+    return int(written)
