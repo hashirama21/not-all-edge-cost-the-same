@@ -164,7 +164,10 @@ async def explore(start_url: str, allowed_domains: list[str], out: Path, max_ste
     cfg = agent_settings()
     llm = make_llm(cfg)
     local = cfg["backend"] == "llamacpp"
-    browser = Browser(headless=True, allowed_domains=allowed_domains, user_data_dir=None, accept_downloads=False)
+    # Runners GitHub (Ubuntu récent) : AppArmor bloque la sandbox de Chromium, qui ne démarre pas.
+    # Sans sandbox en CI seulement ; le navigateur y est jetable et borné aux domaines autorisés.
+    browser = Browser(headless=True, allowed_domains=allowed_domains, user_data_dir=None, accept_downloads=False,
+                      chromium_sandbox=not os.environ.get("CI"))
     agent = Agent(
         task=TASK.format(start_url=start_url),
         llm=llm,
