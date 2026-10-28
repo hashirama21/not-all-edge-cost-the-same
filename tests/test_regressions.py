@@ -333,3 +333,45 @@ def test_llm_max_tokens_retry_and_truncation_flag(isolated_data, monkeypatch):
     assert calls == [llm.MAX_TOKENS, llm.MAX_TOKENS_RETRY]
     assert res["tronque"] is True and res["data"]["entreprises"] == []
     assert llm.MAX_PDF_BYTES * 4 / 3 < 32_000_000
+
+
+# --------------------------------------------------------------------------- documents PRIDESOFT (liens _dl + iframe)
+def test_pridesoft_download_links_follow_iframe(isolated_data, monkeypatch):
+    from cmrmp.sources import common, documents
+
+    links = [{"url": "https://pridesoft.armp.cm//0903_publications_dl?type_publication=DEC-ATTR&id_publication=1", "text": ""},
+             {"url": "http://pridesoft.armp.cm//0903_dao_dl?type_publication=DEC-ATTR&id_publication=1", "text": ""},
+             {"url": "https://armp.cm/details?type_publication=DEC-ATTR&id_publication=1", "text": ""}]
+    assert len(common.document_links(links)) == 2
+    assert len(common.document_links(links, settings()["katika"]["document_link_regex"])) == 2
+    common.queue_documents("armp", "https://armp.cm/details", common.document_links(links))
+
+    pdf = b"%PDF-1.4 test"
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if "publications_dl" in req.url.path:  # le nom du fichier contient une apostrophe
+            return httpx.Response(200, html='<iframe width="1000" src="https://pridesoft.armp.cm/_lib/file/doc/0903/'
+                                             "2026/04/21/C_X/Décision d'attribution (1).pdf\"></iframe>")
+        if "dao_dl" in req.url.path:  # iframe vers un dossier : pas de document publié
+            return httpx.Response(200, html='<iframe src="https://pridesoft.armp.cm/_lib/file/doc/0903/2026/04/21/C_X/"></iframe>')
+        if req.url.path.endswith(".pdf"):
+            return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+        return httpx.Response(404)
+
+    _patch_client(monkeypatch, documents, handler)
+    stats = documents.download_all()
+    assert stats["ok"] == 1 and stats["sans_fichier"] == 1 and stats["error"] == 0
+    caps = [c for c in storage.iter_manifest() if c.content_type == "application/pdf"]
+    assert len(caps) == 1 and caps[0].body() == pdf and caps[0].extra["via"].endswith("id_publication=1")
+
+
+def test_audit_with_empty_tables(isolated_data):
+    from typer.testing import CliRunner
+
+    from cmrmp.cli import app
+
+    tables.write({"avis": pd.DataFrame(), "soumissions": pd.DataFrame(), "documents": pd.DataFrame()})
+    res = CliRunner().invoke(app, ["audit"])
+    assert res.exit_code == 0, res.output

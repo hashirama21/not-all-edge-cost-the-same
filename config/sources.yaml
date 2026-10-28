@@ -21,7 +21,8 @@ katika:
   max_pages: 2000
   item_selectors: ["table tbody tr", "div.card", "li.list-group-item", "article"]
   detail_link_regex: "/tender/[^?#]+"
-  document_link_regex: "\\.(pdf|docx?|xlsx?)(\\?|$)"
+  # Les documents passent par PRIDESOFT : « 0903_publications_dl?type_publication=…&id_publication=… »
+  document_link_regex: "\\.(pdf|docx?|xlsx?)(\\?|$)|_dl\\?type_publication="
 
 armp:
   base_url: "https://armp.cm"

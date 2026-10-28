@@ -191,17 +191,18 @@ def audit():
     for name in ("avis", "soumissions", "attributions", "sanctions", "entreprises", "documents"):
         f = p / f"{name}.parquet"
         report[name] = len(pd.read_parquet(f)) if f.exists() else 0
-    if (p / "avis.parquet").exists():
+    # Une table vide est écrite sans colonnes : on ne lit que les colonnes présentes.
+    if (p / "avis.parquet").exists() and report["avis"]:
         avis = pd.read_parquet(p / "avis.parquet")
         year = pd.to_datetime(avis["date_publication"], errors="coerce").dt.year
         report["avis_par_annee"] = year.value_counts().sort_index().to_dict()
         report["top_maitres_ouvrage"] = avis["maitre_ouvrage"].value_counts().head(15).to_dict()
-        if (p / "soumissions.parquet").exists():
+        if (p / "soumissions.parquet").exists() and report["soumissions"]:
             s = pd.read_parquet(p / "soumissions.parquet")
             refs_pv = set(s["reference"].dropna())
             report["part_avis_avec_pv"] = round(avis["reference"].isin(refs_pv).mean(), 3)
             report["part_offres_avec_montant"] = round(s["montant_offre_fcfa"].notna().mean(), 3)
-    if (p / "documents.parquet").exists():
+    if (p / "documents.parquet").exists() and report["documents"]:
         d = pd.read_parquet(p / "documents.parquet")
         report["documents_par_type"] = d["doc_type"].value_counts().to_dict()
         report["part_pdf_ocr"] = round(d["ocr"].mean(), 3) if "ocr" in d else None

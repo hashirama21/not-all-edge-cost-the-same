@@ -12,7 +12,9 @@ from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 from ..config import data_dir
 from ..storage import append_jsonl_unique
 
-DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?|zip)(\?|#|$)", re.IGNORECASE)
+# Fichier par extension, ou lien de téléchargement PRIDESOFT sans extension
+# (« 0903_publications_dl?type_publication=… », « 0903_dao_dl?… ») : page à iframe vers le PDF.
+DOC_RE = re.compile(r"\.(pdf|docx?|xlsx?|zip)(\?|#|$)|_dl\?type_publication=", re.IGNORECASE)
 
 
 def interim(name: str) -> Path:

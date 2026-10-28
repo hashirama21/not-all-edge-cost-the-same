@@ -43,13 +43,18 @@ jobs:
         run: scripts/step.sh "HF dgi" cmrmp hf check --bucket "$HF_BUCKET"
       - name: Cache depuis le bucket
         run: scripts/step.sh "Pull dgi" cmrmp hf pull --bucket "$HF_BUCKET" --path raw/dgi --path interim/dgi
+      # Budget du job (350 min) : collecte 270 min, puis le brut part dans le bucket AVANT
+      # l'unification, pour qu'un dépassement de délai ne fasse jamais perdre la collecte.
       - name: Parcours des formulaires et téléchargements
         run: |
-          if [ "${{ github.event.inputs.official || 'true' }}" = "true" ]; then scripts/step.sh "Collecte DGI" timeout 320m cmrmp dgi crawl
-          else scripts/step.sh "Collecte DGI" timeout 320m cmrmp dgi crawl --no-official; fi
+          if [ "${{ github.event.inputs.official || 'true' }}" = "true" ]; then scripts/step.sh "Collecte DGI" timeout 270m cmrmp dgi crawl
+          else scripts/step.sh "Collecte DGI" timeout 270m cmrmp dgi crawl --no-official; fi
+      - name: Brut vers le bucket
+        if: always()
+        run: scripts/step.sh "Push brut dgi" cmrmp hf push --bucket "$HF_BUCKET" --path raw/dgi --path interim/dgi
       - name: Fichier unifié
         if: always()
-        run: scripts/step.sh "Unification" cmrmp dgi unify
+        run: scripts/step.sh "Unification" timeout 30m cmrmp dgi unify
       - name: Envoi vers le bucket
         if: always()
         run: |
