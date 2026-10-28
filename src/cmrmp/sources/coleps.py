@@ -129,9 +129,18 @@ def _crawl_listing(page, listing: dict, store: RawStore, pol: dict, max_pages: i
             break
         for item in items:
             rec = {"source": SOURCE, "listing": listing["description"], "page": page_no, "url": page.url}
-            for f in listing["fields"]:
-                el = item.query_selector(f["css"])
-                rec[f["name"]] = el.inner_text().strip() if el else None
+            cells = [c.inner_text().strip() for c in item.query_selector_all("td")]
+            if cells:
+                rec["cells"] = cells
+            elif not item.query_selector("a[href]"):  # ligne d'en-tête (th) ou ligne vide
+                continue
+            for i, f in enumerate(listing["fields"]):
+                # Sans sélecteur (l'agent n'en a pas toujours trouvé), la cellule de même rang.
+                if (f.get("css") or "").strip():
+                    el = item.query_selector(f["css"])
+                    rec[f["name"]] = el.inner_text().strip() if el else None
+                else:
+                    rec[f["name"]] = cells[i] if i < len(cells) else None
             for key, sel in (("detail_url", listing.get("detail_link_selector")),
                              ("document_url", listing.get("document_link_selector"))):
                 el = item.query_selector(sel) if sel else None

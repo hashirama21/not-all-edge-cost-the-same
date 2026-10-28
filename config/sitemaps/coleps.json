@@ -1,0 +1,60 @@
+{
+  "site": "https://www.marchespublics.cm",
+  "requires_login_for": [
+    "Enregistrement des Soumissionnaires",
+    "Enregistrement des MO/MOD",
+    "Catalogue Électronique",
+    "Ma page"
+  ],
+  "listings": [
+    {
+      "description": "Avis d'Appel d'Offres",
+      "url": "https://www.marchespublics.cm/pt/notice/movePtNoticeOpt.do?menuId=PT01010200",
+      "pagination": "?page=",
+      "item_selector": "tr",
+      "fields": [
+        {
+          "name": "N° d'Avis",
+          "css": "a",
+          "example": "N° d'Avis"
+        },
+        {
+          "name": "Autorité Contractante",
+          "css": "",
+          "example": ""
+        },
+        {
+          "name": "Intitulé",
+          "css": "",
+          "example": ""
+        },
+        {
+          "name": "Type de Procédure",
+          "css": "",
+          "example": ""
+        },
+        {
+          "name": "Nature de prestation",
+          "css": "",
+          "example": ""
+        },
+        {
+          "name": "Date limites",
+          "css": "",
+          "example": ""
+        },
+        {
+          "name": "Statut",
+          "css": "",
+          "example": ""
+        }
+      ],
+      "detail_link_selector": "a",
+      "document_link_selector": null,
+      "estimated_total": "429 pages"
+    }
+  ],
+  "json_endpoints": [],
+  "robots_or_terms_notes": "robots.txt non disponible (404)",
+  "notes": "Les autres listes demandées (PV d'ouverture, décisions d'attribution, sanctions) ne sont pas accessibles publiquement - elles semblent nécessiter une connexion ou ne sont pas disponibles dans les sections explorées. Les sections 'Enregistrement des Soumissionnaires', 'Enregistrement des MO/MOD', 'Catalogue Électronique' et 'Ma page' sont des formulaires ou pages nécessitant une authentification."
+}
