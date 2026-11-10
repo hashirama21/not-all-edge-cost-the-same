@@ -53,6 +53,14 @@ def test_parse_form_and_pager():
     assert f.action == "http://fiscalis.dgi.cm/modules/immatriculation/Consultation/listecontribuable.aspx"
 
 
+def test_result_rows_dedupe_duplicated_grids():
+    table = """<table><tr><th>NIU</th><th>Raison sociale</th></tr>
+    <tr><td>M011500012345A</td><td>ETS ALPHA</td></tr></table>"""
+    html = f"<html><body>{table}{table}</body></html>"
+    rows = dgi.result_rows(html, {"source": "consultation", "url": URL, "requete": "test"})
+    assert len(rows) == 1 and rows[0]["niu"] == "M011500012345A"
+
+
 def test_crawl_unify_and_pseudonymize(isolated_data):
     n = dgi.crawl_consultation([URL], min_delay_s=0, jitter_s=0, transport=httpx.MockTransport(handler))
     assert n >= 2

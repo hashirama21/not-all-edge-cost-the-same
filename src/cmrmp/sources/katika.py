@@ -26,7 +26,7 @@ SOURCE = "katika"
 # Les listes de l'année en cours bougent (nouveaux avis en tête) : on les revalide après ce délai.
 REFRESH_CURRENT_YEAR_S = 6 * 86400
 # Pages en échec d'affilée avant d'abandonner une combinaison année/région/type.
-MAX_FAILED_PAGES = 2
+MAX_FAILED_PAGES = 3
 
 
 def item_key(rec: dict) -> str:
@@ -39,6 +39,7 @@ def list_url(cfg: dict, page: int, year: int | str, region: str = "", type_: str
 
 def crawl(years: list[int] | None = None, max_pages: int | None = None, details: bool = True) -> int:
     cfg = settings()["katika"]
+    pol = settings()["politeness"]
     years = years or cfg["years"]
     max_pages = max_pages or cfg["max_pages"]
     detail_rx = re.compile(cfg["detail_link_regex"])
@@ -46,7 +47,8 @@ def crawl(years: list[int] | None = None, max_pages: int | None = None, details:
     n_items = 0
     seen: set[str] = set()
     this_year = date.today().year
-    with PoliteClient(SOURCE) as http:
+    with PoliteClient(SOURCE, min_delay_s=cfg.get("min_delay_s", pol["min_delay_s"]),
+                      jitter_s=cfg.get("jitter_s", pol["jitter_s"])) as http:
         for year in years:
             max_age = REFRESH_CURRENT_YEAR_S if int(year) >= this_year else None
             for region in cfg["regions"]:
@@ -70,13 +72,15 @@ def crawl(years: list[int] | None = None, max_pages: int | None = None, details:
                                 continue
                             seen.add(key)
                             fresh += 1
-                            detail = next((l["url"] for l in it["links"] if detail_rx.search(l["url"])), None)
+                            detail = next((link["url"] for link in it["links"] if detail_rx.search(link["url"])), None)
+                            if not detail:
+                                detail = next((link["url"] for link in it["links"] if "armp.cm/details" in link["url"]), None)
                             docs = document_links(it["links"], cfg["document_link_regex"])
                             rec = {
                                 "source": SOURCE, "list_url": url, "year": year, "region": region,
                                 "type_filter": type_, "page": page, "text": it["text"], "cells": it["cells"],
                                 "detail_url": detail, "documents": docs,
-                                "armp_links": [l["url"] for l in it["links"] if "armp.cm" in l["url"]],
+                                "armp_links": [link["url"] for link in it["links"] if "armp.cm" in link["url"]],
                                 "reference": fields.reference(it["text"]),
                                 "date": str(fields.parse_date_fr(it["text"]) or ""),
                                 "doc_type": fields.classify(it["text"]),
@@ -108,6 +112,6 @@ def _crawl_detail(http: PoliteClient, url: str, reference: str | None, cfg: dict
     append_jsonl_unique(interim("katika_details.jsonl"), {
         "source": SOURCE, "url": url, "reference": reference or fields.reference(text),
         "text": text[:20000], "label_values": fields.label_values(text), "documents": docs,
-        "armp_links": [l["url"] for l in links if "armp.cm" in l["url"]], "fetched_at": cap.fetched_at,
+        "armp_links": [link["url"] for link in links if "armp.cm" in link["url"]], "fetched_at": cap.fetched_at,
     }, key=lambda r: r["url"])
     queue_documents(SOURCE, url, docs, {"reference": reference})

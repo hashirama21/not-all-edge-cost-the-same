@@ -62,10 +62,47 @@ def crawl_armp_discover():
 
 
 @crawl_app.command("armp")
-def crawl_armp(types: str = typer.Option(None, help="ex. DEC-ATTR,AAO"), start: int = None, end: int = None):
+def crawl_armp(types: str = typer.Option(None, help="codes type_publication, ex. AO,DC"),
+               pages: int = typer.Option(None, help="pages du rattrapage « 3 derniers mois »"),
+               exercices: str = typer.Option(None, help="années, ex. 2021,2026 (défaut : config)"),
+               codes: str = typer.Option(None, help="codes type_procedure, ex. 1,5"),
+               no_recent: bool = typer.Option(False),
+               region: str = typer.Option(None), departement: str = typer.Option(None),
+               maitre_ouvrage: str = typer.Option(None), seuil: int = typer.Option(None),
+               reference: str = typer.Option(None), details: bool = typer.Option(False)):
+    """Couverture ARMP : rattrapage récent + /filtres_avancee 2016→2026."""
+    from .sources import armp
+
+    n = armp.crawl_publications(
+        types.split(",") if types else None, pages, region, departement, maitre_ouvrage,
+        seuil, reference,
+        exercices=[int(x) for x in exercices.split(",")] if exercices else None,
+        codes=[int(x) for x in codes.split(",")] if codes else None,
+        recent=not no_recent, details=details)
+    typer.echo(f"{n} publications")
+
+
+@crawl_app.command("armp-ids")
+def crawl_armp_ids(types: str = typer.Option(None, help="ex. DEC-ATTR"), start: int = None, end: int = None):
+    """Repli : énumération numérique des fiches /details."""
     from .sources import armp
 
     typer.echo(f"{armp.crawl_details(types.split(',') if types else None, start, end)} fiches")
+
+
+@crawl_app.command("armp-sanctions")
+def crawl_armp_sanctions():
+    from .sources import armp
+
+    typer.echo(f"{armp.crawl_sanctions()} sanctions")
+
+
+@crawl_app.command("armp-experts")
+def crawl_armp_experts(region: str = typer.Option(None), ville: str = typer.Option(None),
+                       domaines: str = typer.Option(None, help="ex. AG,BEC")):
+    from .sources import armp
+
+    typer.echo(f"{armp.crawl_experts(region, ville, domaines.split(',') if domaines else None)} experts")
 
 
 @crawl_app.command("pridesoft")
@@ -90,9 +127,13 @@ def crawl_minmap():
 
 
 @crawl_app.command("coleps")
-def crawl_coleps(sitemap: Path = typer.Option(None), max_pages: int = 500):
+def crawl_coleps(sitemap: Path = typer.Option(None), max_pages: int = 500,
+                 browser: bool = typer.Option(False, help="rejouer une carte avec Playwright au lieu du parcours HTTP")):
     from .sources import coleps
 
+    if not browser:
+        typer.echo(f"{coleps.crawl_http(max_pages)} items")
+        return
     path = sitemap or coleps.default_sitemap_path()
     if not path.exists():
         typer.echo(f"carte absente : {path} (lancez `cmrmp agent explore`)", err=True)

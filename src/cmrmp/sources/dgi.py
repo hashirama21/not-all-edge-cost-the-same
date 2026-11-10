@@ -18,7 +18,6 @@ physiques sont pseudonymisées à la publication (loi n° 2024/017).
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import re
@@ -160,11 +159,21 @@ def rows_from_records(records: list[dict], provenance: dict) -> list[dict]:
     return out
 
 
+def _dedupe_rows(rows: list[dict], ignore: tuple[str, ...] = ()) -> list[dict]:
+    seen, out = set(), []
+    for row in rows:
+        key = tuple(sorted((k, v) for k, v in row.items() if k not in ignore))
+        if key not in seen:
+            seen.add(key)
+            out.append(row)
+    return out
+
+
 def result_rows(html: str, provenance: dict) -> list[dict]:
     rows = []
     for table in html_tables(html):
         rows += rows_from_records(table, provenance)
-    return rows
+    return _dedupe_rows(rows)
 
 
 def announced_count(html: str) -> int | None:
@@ -184,15 +193,18 @@ class Consultation:
         return self.http.fetch(form.action, method="POST", data=data, cache_key=key, extra={"query": tag})
 
     def _paginate(self, cap, tag: str) -> int:
-        """Lit la page courante puis suit 'Page$N' jusqu'à la dernière ; renvoie le nombre de lignes."""
-        n, page_no, seen_pages = 0, 1, set()
+        """Lit la page courante puis suit 'Page$N' jusqu'à la dernière ; renvoie le nombre de NIU distincts."""
+        n, page_no, seen_pages, seen_niu = 0, 1, set(), set()
         while cap is not None and page_no <= self.cfg["max_pages_per_query"]:
             html = cap.text()
             rows = result_rows(html, {"source": "consultation", "url": self.url, "requete": tag,
                                       "page": page_no, "fetched_at": cap.fetched_at})
             for r in rows:  # une relance relit le cache : pas de doublon dans le fichier
+                if r["niu"] in seen_niu:
+                    continue
+                seen_niu.add(r["niu"])
                 append_jsonl_unique(self.out, r, key=lambda x: (x["niu"], x.get("requete")))
-            n += len(rows)
+                n += 1
             self._exports(cap, html, tag)
             form = parse_form(html, cap.final_url)
             if form is None:
@@ -250,8 +262,11 @@ class Consultation:
         submit = next(((n, v) for n, v in form.submits if rx_submit.search(n) or rx_submit.search(v)),
                       form.submits[0] if form.submits else None)
         total = 0
-        # 1) Listes déroulantes (centre, régime, activité…) : une requête par option non vide.
+        # 1) Listes déroulantes de l'onglet de recherche uniquement (centre, régime, activité…).
+        submit_prefix = submit[0].rsplit("$", 1)[0] if submit else ""
         for name, options in form.selects.items():
+            if submit_prefix and not name.startswith(submit_prefix):
+                continue
             for value, label in options:
                 if not value or value in ("0", "-1"):
                     continue
@@ -291,12 +306,12 @@ def crawl_consultation(urls: list[str] | None = None, **client_kw) -> int:
 def rows_from_file(path: Path, provenance: dict) -> list[dict]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        _, meta = pdf_text(path, ocr=True)
+        _, meta = pdf_text(path, ocr=True, max_tables=None)
         rows = []
         for t in meta.get("tables") or []:
             records = [dict(zip(t["header"], r)) for r in t["rows"] if len(r) == len(t["header"])]
             rows += rows_from_records(records, {**provenance, "page": t["page"]})
-        return rows
+        return _dedupe_rows(rows, ignore=("page", "source", "url", "statut_liste", "date_reference", "fetched_at"))
     if suffix in (".xls", ".xlsx", ".csv"):
         if suffix == ".csv":
             frames = {"csv": pd.read_csv(path, dtype=str, sep=None, engine="python", encoding_errors="replace")}
@@ -365,7 +380,10 @@ def unify() -> pd.DataFrame:
     df = df[df["niu"].str.fullmatch(r"[MP]\d{12}[A-Z]", na=False)]
     df["_prio"] = df["source"].map({"consultation": 0, "export_consultation": 1}).fillna(2)
     df = df.sort_values(["niu", "_prio", "fetched_at"], ascending=[True, True, False])
-    first = lambda s: next((v for v in s if isinstance(v, str) and v), None)
+
+    def first(s):
+        return next((v for v in s if isinstance(v, str) and v), None)
+
     agg = {c: first for c in cols if c != "niu"}
     agg.update({"statut_liste": lambda s: sorted({v for v in s if isinstance(v, str)}),
                 "url": lambda s: sorted(set(s.dropna()))[:20], "source": lambda s: sorted(set(s)),
@@ -381,7 +399,12 @@ def pseudonymize_natural_persons(df: pd.DataFrame, salt: str) -> pd.DataFrame:
     """Pour les NIU en P (personnes physiques) : nom, sigle et localisation hachés, NIU haché."""
     df = df.copy()
     mask = df["type_personne"] == "physique"
-    h = lambda v: None if not isinstance(v, str) else "h_" + hashlib.sha256(f"{salt}|{v}".encode()).hexdigest()[:16]
+
+    def h(v):
+        if not isinstance(v, str):
+            return None
+        return "h_" + hashlib.sha256(f"{salt}|{v}".encode()).hexdigest()[:16]
+
     for col in ("niu", "raison_sociale", "sigle", "localisation"):
         df.loc[mask, col] = df.loc[mask, col].map(h)
     return df

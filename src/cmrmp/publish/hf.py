@@ -17,8 +17,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 
@@ -48,7 +46,12 @@ TABLE_DESCRIPTIONS = {
 
 def pseudonymize(df: pd.DataFrame, salt: str) -> pd.DataFrame:
     df = df.copy()
-    h = lambda v: None if v is None or (isinstance(v, float) and pd.isna(v)) else "h_" + hashlib.sha256(f"{salt}|{v}".encode()).hexdigest()[:16]
+
+    def h(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        return "h_" + hashlib.sha256(f"{salt}|{v}".encode()).hexdigest()[:16]
+
     for col in PERSONAL_COLS & set(df.columns):
         def anon(v):
             if isinstance(v, str) and v.startswith("["):

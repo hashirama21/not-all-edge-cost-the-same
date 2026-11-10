@@ -10,8 +10,6 @@ import re
 import unicodedata
 from datetime import date
 
-from ..time import utc_now_iso
-
 MOIS = {
     "janvier": 1, "fevrier": 2, "février": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
     "juillet": 7, "aout": 8, "août": 8, "septembre": 9, "octobre": 10, "novembre": 11,
@@ -45,7 +43,8 @@ _AMOUNT = (r"(?<![\d.,])(?P<amt>\d{1,3}(?P<sep>[\s  .,])\d{3}(?:(?P=sep)\d{3}
 _CURRENCY = r"(?:F\.?\s?CFA|FCFA|XAF|francs?\s+CFA|F\s?CFA|FRS?\s?CFA)"
 
 RE_REFERENCE = re.compile(
-    r"N[°ºo]\.?\s*(\d{1,5}[A-Z]?(?:\s*/\s*[A-Z0-9][A-Z0-9_\-\.\s]*?){2,8}/\s*(?:19|20)\d{2})",
+    r"N[°ºo]\.?\s*(\d{1,5}[A-Z]?(?:\s*/\s*[A-Z][A-Z0-9_\-\.]*)"
+    r"{1,8}/\s*(?:19|20)\d{2})",
     re.IGNORECASE,
 )
 RE_NIU = re.compile(r"\b([MP]\s?\d{12}\s?[A-Z])\b")
@@ -282,7 +281,9 @@ def bids_from_tables(tables: list[dict]) -> list[dict]:
         rows = t.get("rows") or []
         if not header or not any(_COL_NAME.search(h) for h in header):
             header, rows = (rows[0], rows[1:]) if rows else ([], [])
-        idx = lambda rx: next((i for i, h in enumerate(header) if rx.search(str(h or ""))), None)
+        def idx(rx):
+            return next((i for i, h in enumerate(header) if rx.search(str(h or ""))), None)
+
         i_name, i_amount, i_rank, i_status = idx(_COL_NAME), idx(_COL_AMOUNT), idx(_COL_RANK), idx(_COL_STATUS)
         if i_name is None or i_amount is None:
             continue

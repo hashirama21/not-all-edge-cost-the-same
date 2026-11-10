@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from ..config import data_dir
-from ..extract.fields import normalize_lot, normalize_reference, parse_fcfa, procedure_from_reference
+from ..extract.fields import normalize_lot, normalize_reference, parse_fcfa, procedure_from_reference, reference
 from ..sources.common import interim
 from ..storage import read_jsonl
 from . import entities
@@ -64,6 +65,14 @@ def _duree_mois(duree: str | None) -> int | None:
     return n * 12 if m.group(2).startswith("an") else n
 
 
+def _mois_entre(debut: str | None, fin: str | None) -> int | None:
+    try:
+        a, b = date.fromisoformat(debut), date.fromisoformat(fin)
+    except (TypeError, ValueError):
+        return None
+    return max(0, (b.year - a.year) * 12 + b.month - a.month)
+
+
 def _sanction_type(text: str) -> str:
     t = text.lower()
     for kind, rx in (("exclusion", r"exclu"), ("suspension", r"suspen"), ("resiliation", r"r[ée]siliation"),
@@ -80,9 +89,10 @@ def build_publications() -> pd.DataFrame:
         rows.append({"source": "katika", "url": rec.get("detail_url") or rec["list_url"], "reference": rec.get("reference"),
                      "doc_type": rec.get("doc_type"), "date": rec.get("date") or None, "texte": rec["text"],
                      "n_documents": len(rec.get("documents", [])), "fetched_at": rec.get("fetched_at")})
-    for rec in _jsonl("armp_details.jsonl"):
+    for rec in _jsonl("armp_publications.jsonl") + _jsonl("armp_details.jsonl"):
         rows.append({"source": "armp", "url": rec["url"], "reference": rec.get("reference"),
-                     "doc_type": rec.get("doc_type"), "date": None, "texte": rec.get("text", "")[:5000],
+                     "doc_type": rec.get("doc_type"), "date": rec.get("date_publication"),
+                     "texte": rec.get("text", "")[:5000],
                      "n_documents": len(rec.get("documents", [])), "fetched_at": rec.get("fetched_at")})
     for rec in _jsonl("pridesoft_reports.jsonl"):
         rows.append({"source": "pridesoft", "url": rec["url"], "reference": rec.get("reference"),
@@ -92,7 +102,7 @@ def build_publications() -> pd.DataFrame:
     if df.empty:
         return df
     # Les anciens fichiers peuvent contenir des doublons de relance : la dernière capture prime.
-    return df.drop_duplicates(["source", "url", "texte"], keep="last").reset_index(drop=True)
+    return df.drop_duplicates(["source", "url"], keep="last").reset_index(drop=True)
 
 
 def _dedupe_avis(df: pd.DataFrame) -> pd.DataFrame:
@@ -246,9 +256,20 @@ def build_all() -> dict[str, pd.DataFrame]:
                          "niu": None, "type_sanction": kind, "duree_mois": _duree_mois(rec.get("duree")),
                          "motif": None, "marche_reference": None})
 
+    # Exclusions ARMP depuis la table publique /sanctions.
+    for rec in _jsonl("armp_sanctions.jsonl"):
+        objet = rec.get("reference_objet") or ""
+        sanc.append({"doc_id": None, "url_source": rec.get("url"), "modele_extraction": "table",
+                     "autorite": "ARMP", "date_decision": rec.get("date_debut"),
+                     "entreprise_brut": rec.get("prestataire"), "niu": None,
+                     "type_sanction": _sanction_type(rec.get("motif") or ""),
+                     "duree_mois": _mois_entre(rec.get("date_debut"), rec.get("date_fin")),
+            "motif": rec.get("motif"),
+            "marche_reference": reference(objet) or _ref(objet)})
+
     sanctions = pd.DataFrame(sanc)
     if not sanctions.empty:
-        sanctions = sanctions.drop_duplicates(["url_source", "entreprise_brut", "doc_id"]).reset_index(drop=True)
+        sanctions = sanctions.drop_duplicates(["url_source", "entreprise_brut", "date_decision", "marche_reference", "doc_id"]).reset_index(drop=True)
     t = {
         "publications": build_publications(),
         "avis": _dedupe_avis(pd.DataFrame(avis)),

@@ -24,6 +24,12 @@ def test_avis_fields():
     assert f["date_ouverture"] == date(2026, 4, 22)
 
 
+def test_reference_stops_before_glued_date():
+    text = "Avis N° 005/AONO/C.BTA1ER/SG/ST/CIPM/2026DU28/01/2026 du 28 janvier 2026"
+    assert fields.reference(text) == "005/AONO/C.BTA1ER/SG/ST/CIPM/2026"
+    assert fields.reference("N° 012/AONO/MINMAP/CIPM/2024") == "012/AONO/MINMAP/CIPM/2024"
+
+
 def test_identifiers():
     text = "NIU : M011500012345A, RCCM RC/YAO/2015/B/1234, tél. +237 699 12 34 56, contact@ets-alpha.cm"
     assert fields.niu_list(text) == ["M011500012345A"]

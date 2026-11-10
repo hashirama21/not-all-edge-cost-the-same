@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import random
+import ssl
 import threading
 import time
 from datetime import datetime, timezone
@@ -72,24 +73,49 @@ def parse_retry_after(value: str | None) -> float | None:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
+def legacy_ssl_context() -> ssl.SSLContext:
+    """Contexte TLS pour les vieux portails (marchespublics/publiccontracts).
+
+    Ces hôtes présentent une chaîne de certification incomplète ou un nom qui ne
+    correspond pas au certificat ; le navigateur les ouvre pourtant. On désactive donc
+    la vérification et on abaisse le niveau de sécurité OpenSSL pour accepter leurs
+    suites cryptographiques anciennes.
+    """
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+    except ssl.SSLError:
+        pass
+    return ctx
+
+
 class PoliteClient:
     def __init__(self, source: str, *, min_delay_s: float | None = None, jitter_s: float | None = None,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None, verify: ssl.SSLContext | bool | None = None):
         cfg = settings()["politeness"]
+        source_cfg = settings().get(source) or {}
         contact = settings()["contact"] or "contact-non-renseigne"
         self.source = source
         self.store = RawStore(source)
         self.min_delay = min_delay_s if min_delay_s is not None else cfg["min_delay_s"]
         self.jitter = jitter_s if jitter_s is not None else cfg["jitter_s"]
         self.respect_robots = cfg["respect_robots"]
-        self.max_retries = cfg["max_retries"]
+        self.max_retries = int(source_cfg.get("max_retries", cfg["max_retries"]))
         self.user_agent = f"cmrmp/{__version__} (academic research; +mailto:{contact})"
-        self.client = httpx.Client(
-            headers={"User-Agent": self.user_agent, "Accept-Language": "fr,en;q=0.8"},
-            timeout=cfg["timeout_s"],
-            follow_redirects=True,
-            transport=transport,
-        )
+        if verify is None:
+            verify = legacy_ssl_context() if source_cfg.get("insecure_tls") else True
+        client_kw: dict = {
+            "headers": {"User-Agent": self.user_agent, "Accept-Language": "fr,en;q=0.8"},
+            "timeout": cfg["timeout_s"],
+            "follow_redirects": True,
+        }
+        if transport is not None:
+            client_kw["transport"] = transport
+        else:
+            client_kw["verify"] = verify
+        self.client = httpx.Client(**client_kw)
         self._robots: dict[str, RobotFileParser | None] = {}
         self._last_hit: dict[str, float] = {}
         self._lock = threading.Lock()

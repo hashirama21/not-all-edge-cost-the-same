@@ -12,8 +12,8 @@ import re
 from collections import defaultdict
 from urllib.parse import urljoin, urlsplit
 
-from ..config import data_dir
-from ..http import PoliteClient, RobotsDisallowed
+from ..config import data_dir, settings
+from ..http import PoliteClient, RobotsDisallowed, legacy_ssl_context
 from ..storage import Capture, read_jsonl
 from .common import DOC_RE
 
@@ -35,6 +35,24 @@ def framed_document(cap: Capture) -> str | None:
     return url if DOC_RE.search(url) and not url.endswith("/") else None
 
 
+def _verify_for(host: str):
+    """Contexte TLS des portails COLEPS, y compris pour la file de documents.
+
+    `download_all` ouvre un client par h�te (`docs/host`) : la configuration `coleps`
+    (insecure_tls, allowed_domains) ne s'applique donc pas automatiquement. Sans ce
+    contexte, robots.txt �choue en `DH_KEY_TOO_SMALL` et tous les documents sont
+    class�s � disallowed �.
+    """
+    cfg = settings().get("coleps") or {}
+    if not cfg.get("insecure_tls"):
+        return None
+    host = host.lower()
+    allowed = [str(d).lower().removeprefix("*.") for d in cfg.get("allowed_domains", [])]
+    if any(host == d or host.endswith("." + d) for d in allowed):
+        return legacy_ssl_context()
+    return None
+
+
 def pending() -> list[dict]:
     seen, out = set(), []
     for path in sorted(data_dir("interim").glob("*/*_documents_queue.jsonl")):
@@ -52,7 +70,7 @@ def download_all(limit: int | None = None) -> dict[str, int]:
         by_host[urlsplit(rec["url"]).netloc].append(rec)
     stats = {"ok": 0, "missing": 0, "disallowed": 0, "error": 0, "sans_fichier": 0}
     for host, recs in by_host.items():
-        with PoliteClient(f"docs/{host}") as http:
+        with PoliteClient(f"docs/{host}", verify=_verify_for(host)) as http:
             for rec in recs:
                 try:
                     extra = {k: v for k, v in rec.items() if k != "url"}

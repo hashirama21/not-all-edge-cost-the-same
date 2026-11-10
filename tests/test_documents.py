@@ -68,3 +68,37 @@ def test_pipeline_on_pdf(tmp_path, isolated_data):
     assert len(t["soumissions"]) == 3
     assert t["soumissions"]["modele_extraction"].eq("pymupdf_tables").all()
     assert t["soumissions"]["reference"].iloc[0] == "025/AONO/CAYI/2026"
+
+
+def _table_pdf(path, pages):
+    doc = pymupdf.open()
+    for rows in pages:
+        page = doc.new_page()
+        xs, y0, h = [40, 110, 300], 70, 24
+        for i in range(len(rows) + 1):
+            page.draw_line((xs[0], y0 + i * h), (xs[-1], y0 + i * h))
+        for x in xs:
+            page.draw_line((x, y0), (x, y0 + len(rows) * h))
+        for i, row in enumerate(rows):
+            for j, cell in enumerate(row):
+                page.insert_text((xs[j] + 3, y0 + i * h + 16), cell, fontsize=8)
+    doc.save(path)
+
+
+def test_pdf_table_cap_removed_and_header_carried(tmp_path):
+    from cmrmp.sources.dgi import rows_from_file
+
+    path = tmp_path / "contribuables.pdf"
+    header = ["NIU", "Raison sociale"]
+    _table_pdf(path, [
+        [header, ["M011500012345A", "ETS ALPHA"], ["P058712345678X", "JEAN DUPONT"]],
+        [["M099900011111B", "GAMMA SERVICES"], ["M011500012346B", "BETA BTP"]],
+    ])
+    _, meta = pdf_text(path, ocr=False, max_tables=None)
+    assert len(meta["tables"]) == 2
+    assert meta["tables"][0]["header"] == header
+    assert meta["tables"][1]["header"] == header
+    rows = rows_from_file(path, {"source": "fichier_officiel", "url": "x", "statut_liste": "actif",
+                                 "date_reference": None, "fetched_at": "now"})
+    assert {r["niu"] for r in rows} == {
+        "M011500012345A", "P058712345678X", "M099900011111B", "M011500012346B"}

@@ -79,8 +79,8 @@ def run(llm: bool = False, workers: int = 4, llm_types: tuple[str, ...] = ("avis
     df = df.drop(columns=["tab_soumissions"], errors="ignore")
     # Add provenance timestamps
     try:
-        from . import documents as _docs
         from ..time import utc_now_iso
+
         df["extracted_at_utc"] = utc_now_iso("seconds")
     except Exception:
         pass

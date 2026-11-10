@@ -4,12 +4,15 @@ pages scannées, tableaux et métadonnées."""
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
+
+from .fields import RE_NIU, RE_RCCM
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +21,12 @@ OCR_DPI = 300
 OCR_LANG = "fra+eng"
 MAX_TABLES = 200
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+_HEADER_WORDS = re.compile(
+    r"niu|n[°ºo]\b|num[eé]ro|raison|d[ée]nomination|\bnom\b|sigle|activit|centre|r[ée]gime|"
+    r"localisation|statut|soumissionnaire|montant|observation|\brang\b|date|objet|entreprise|"
+    r"adresse|t[ée]l[ée]phone|e-?mail|rccm",
+    re.I,
+)
 
 
 def _tessdata() -> str | None:
@@ -44,10 +53,26 @@ def _cell_text(words: list, bbox) -> str:
 
 
 def _to_markdown(rows: list[list[str]]) -> str:
-    esc = lambda c: c.replace("|", "\\|").replace("\n", " ")
+    def esc(c):
+        return c.replace("|", "\\|").replace("\n", " ")
+
     lines = ["| " + " | ".join(esc(c) for c in rows[0]) + " |", "|" + "---|" * len(rows[0])]
     lines += ["| " + " | ".join(esc(c) for c in r) + " |" for r in rows[1:]]
     return "\n".join(lines)
+
+
+def _looks_like_header(row: list[str]) -> bool:
+    cells = [str(c or "").strip() for c in row]
+    cells = [c for c in cells if c]
+    if not cells:
+        return False
+    text = " ".join(cells)
+    if RE_NIU.search(text) or RE_RCCM.search(text):
+        return False
+    if _HEADER_WORDS.search(text):
+        return True
+    numeric = sum(bool(re.fullmatch(r"[\d\s.,/%°º/-]+", c)) for c in cells)
+    return numeric / len(cells) < 0.5
 
 
 def _page_tables(page) -> list[dict]:
@@ -65,14 +90,16 @@ def _page_tables(page) -> list[dict]:
                 rows.insert(0, [_cell_text(words, c) for c in tab.header.cells])
             rows = [r for r in rows if any(r)]
             if len(rows) >= 2 and tab.col_count >= 2:
-                out.append({"page": page.number + 1, "strategy": strategy, "header": rows[0],
-                            "rows": rows[1:], "markdown": _to_markdown(rows)})
+                header = rows[0] if _looks_like_header(rows[0]) else []
+                out.append({"page": page.number + 1, "strategy": strategy, "header": header,
+                            "rows": rows[1:] if header else rows,
+                            "markdown": _to_markdown(rows)})
         if out:
             break
     return out
 
 
-def pdf_text(path: Path, ocr: bool = True) -> tuple[str, dict]:
+def pdf_text(path: Path, ocr: bool = True, max_tables: int | None = MAX_TABLES) -> tuple[str, dict]:
     """Texte page par page avec PyMuPDF ; les pages scannées passent par l'OCR intégré
     (Tesseract via PyMuPDF), sinon par ocrmypdf. Renvoie aussi tableaux et métadonnées."""
     import pymupdf
@@ -90,6 +117,7 @@ def pdf_text(path: Path, ocr: bool = True) -> tuple[str, dict]:
     meta["pdf_metadata"] = {k: v for k, v in (doc.metadata or {}).items() if v}
     tessdata = _tessdata() if ocr else None
     pages = []
+    carry_header: list[str] = []
     for page in doc:
         text = page.get_text("text", sort=True)
         if len(text.strip()) < MIN_CHARS_PER_PAGE:
@@ -101,8 +129,14 @@ def pdf_text(path: Path, ocr: bool = True) -> tuple[str, dict]:
                     meta["ocr_pages"] += 1
                 except Exception as exc:
                     log.warning("OCR PyMuPDF en échec p.%s de %s : %s", page.number + 1, path.name, exc)
-        if len(meta["tables"]) < MAX_TABLES:
-            meta["tables"].extend(_page_tables(page))
+        if max_tables is None or len(meta["tables"]) < max_tables:
+            for table in _page_tables(page):
+                if table["header"]:
+                    carry_header = table["header"]
+                elif carry_header:
+                    table["header"] = carry_header
+                    table["markdown"] = _to_markdown([carry_header, *table["rows"]])
+                meta["tables"].append(table)
         pages.append(text)
     doc.close()
     meta["ocr"] = meta["ocr_pages"] > 0

@@ -19,20 +19,47 @@ katika:
   regions: [""]             # "" = toutes ; sinon "SERVICES CENTRAUX", "CENTRE", ...
   types: [""]               # "" = tous les types d'avis
   max_pages: 2000
-  item_selectors: ["table tbody tr", "div.card", "li.list-group-item", "article"]
+  # Katika applique un rate-limit agressif (429) : cadence plus lente que la politesse globale.
+  min_delay_s: 10.0
+  jitter_s: 4.0
+  max_retries: 6
+  item_selectors: ["div.tender-entry", "table tbody tr", "div.card", "li.list-group-item", "article"]
   detail_link_regex: "/tender/[^?#]+"
   # Les documents passent par PRIDESOFT : « 0903_publications_dl?type_publication=…&id_publication=… »
   document_link_regex: "\\.(pdf|docx?|xlsx?)(\\?|$)|_dl\\?type_publication="
 
 armp:
-  base_url: "https://armp.cm"
+  # `armp.cm` (sans www) est instable : toujours passer par www.
+  base_url: "https://www.armp.cm"
+  # Moteur paginé (10 avis/page) : AO 48 464 pubs, DC 11 179, total ~146 610.
+  # Filtres GET : type_publication[], reference_avis, maitre_ouvrage, region,
+  # departement, seuil_marches (1..4), rechercher_parmi (1/2).
+  search_url: "https://www.armp.cm/recherche_avancee"
+  # Tableau de bord filtrable : exercice, type_procedure, nature_prestation,
+  # type_maitre_ouvrage, region, etat_du_projet, seuil, tableau_de_bord,
+  # periode_recours (pages /filtres et /filtres_avancee).
+  discover_url: "https://www.armp.cm/filtres?type=avis&val=0&exercice=2025"
+  # Couverture décennale : /filtres_avancee exige AU MOINS un filtre (sinon 0 résultat) ;
+  # exercice 2017..2026 + type_procedure (1 AON, 5 DC, 12 AMI, 4 AOI, 7 DP, 21 AOR, 6 GAG).
+  # Sondage réel (publications par exercice) : AON 6098 (2017) → 7384 (2026) ;
+  # DC 1294 (2017) → 1883 (2026) ; 2016 contient déjà des publications.
+  filtres_url: "https://www.armp.cm/filtres_avancee?filtre=avis&valeur_filtre=0"
+  exercices: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
+  procedure_codes: [1, 5, 12, 4, 7, 21, 6]
+  year_max_pages: 3          # pages de 10 avis par (exercice, type_procedure)
   # Exemple observé : /details?type_publication=DEC-ATTR&id_publication=22080
-  detail_url: "https://armp.cm/details?type_publication={type}&id_publication={id}"
-  # DEC-ATTR est confirmé. Les autres codes se découvrent avec `cmrmp crawl armp-discover`.
-  types: ["DEC-ATTR"]
+  detail_url: "https://www.armp.cm/details?type_publication={type}&id_publication={id}"
+  sanctions_url: "https://www.armp.cm/sanctions"
+  experts_url: "https://www.armp.cm/experts"
+  experts_search_url: "https://www.armp.cm/experts_search"
+  # Tous les codes connus du formulaire de recherche avancée.
+  types: ["AO", "DC", "AMI", "DP", "ADDITIF", "DEC-ATTR", "DEC-ANN", "DEC-RES", "COMM", "CT"]
+  seuil_marches: 1
+  max_pages: 20
+  listing_max_age_s: 1800
+  # Collecte numérique de repli via /details (crawl_details).
   id_range: [1, 30000]
   stop_after_consecutive_missing: 400
-  listing_urls: ["https://armp.cm/", "https://armp.cm/en"]
 
 pridesoft:
   base_url: "https://pridesoft.armp.cm"
@@ -53,14 +80,29 @@ jdm:
 
 minmap:
   base_url: "https://minmap.cm"
-  # Le site expose des permaliens WordPress (/?p=19494) : on essaie l'API REST WP.
+  # Le site est un Joomla : recherche publique via com_finder (repli si l'API WP est fermée).
   wp_api: "https://minmap.cm/wp-json/wp/v2/posts"
+  finder_url: "https://minmap.cm/index.php?option=com_finder&view=search&lang=fr"
   search_terms: ["exclu", "exclusion", "suspend", "sanction", "résiliation", "mise en demeure", "liste rouge"]
 
 coleps:
-  # Portail transactionnel, rendu JavaScript : exploration par agent, collecte par Playwright.
+  # Portail transactionnel JSP (marchespublics.cm / publiccontracts.cm).
+  # Le parcours HTTP déterministe est le mode par défaut ; l'agent/Playwright reste disponible.
   start_urls: ["https://www.marchespublics.cm", "https://www.publiccontracts.cm"]
   allowed_domains: ["marchespublics.cm", "*.marchespublics.cm", "publiccontracts.cm", "*.publiccontracts.cm"]
+  base_url: "https://www.marchespublics.cm"
+  notice_form_url: "https://www.marchespublics.cm/pt/notice/movePtNoticeOpt.do?menuId=PT01010200"
+  list_path: "/pt/notice/selectListPagePtNoticeOpt.do"
+  detail_path: "/pt/notice/selectPtNoticeOpt.do"
+  download_path: "/co/file/downloadFile.do"
+  page_size: 50
+  categories: [""]          # "" = toutes ; sinon "03", "05", "06", "07", "08"
+  max_pages: 500
+  min_delay_s: 3.0
+  jitter_s: 1.5
+  max_retries: 5
+  # Les deux portails présentent un certificat incomplet / un nom d'hôte non conforme.
+  insecure_tls: true
 
 agent:
   # Modèle de l'agent browser-use. « llamacpp » : serveur llama.cpp local (API compatible
@@ -97,7 +139,7 @@ dgi:
     - "http://fiscalis.dgi.cm/modules/immatriculation/Consultation/listecontribuable.aspx"
     - "https://teledeclaration-dgi.cm/modules/immatriculation/Consultation/listecontribuable.aspx"
   # Champ texte utilisé pour la recherche par préfixe (raison sociale), repéré par son nom ou id.
-  search_field_regex: "raison|nom|denomination|libelle|rs"
+  search_field_regex: "raison|nom|denomination|libelle|^rs|search|recherche|texte"
   niu_field_regex: "niu|nui|identifiant"
   submit_regex: "recherch|search|valider|ok|afficher|consulter"
   export_regex: "export|excel|xls|csv|pdf|t[ée]l[ée]charg"

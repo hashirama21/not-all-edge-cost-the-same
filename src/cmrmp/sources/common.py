@@ -77,7 +77,7 @@ def _repeated_nodes(tree: HTMLParser) -> list[Node]:
 
 def document_links(links: list[dict], pattern: str | None = None) -> list[dict]:
     rx = re.compile(pattern, re.IGNORECASE) if pattern else DOC_RE
-    return [l for l in links if rx.search(l["url"])]
+    return [link for link in links if rx.search(link["url"])]
 
 
 def queue_documents(source: str, referer: str, links: list[dict], context: dict | None = None) -> None:
@@ -94,7 +94,7 @@ def describe_page(html: str, base_url: str) -> dict:
     tree = HTMLParser(html)
     links = absolute_links(tree.root, base_url)
     host = urlsplit(base_url).netloc
-    internal = [l["url"] for l in links if urlsplit(l["url"]).netloc == host]
+    internal = [link["url"] for link in links if urlsplit(link["url"]).netloc == host]
     patterns = Counter(re.sub(r"\d+", "{n}", urlsplit(u).path + ("?" + urlsplit(u).query if urlsplit(u).query else "")) for u in internal)
     classes = Counter(
         f"{n.tag}.{n.attributes.get('class')}" for n in tree.root.traverse()
@@ -114,5 +114,5 @@ def describe_page(html: str, base_url: str) -> dict:
         "repeated_blocks": classes.most_common(20),
         "tables": len(tree.css("table")),
         "forms": forms,
-        "documents": [l["url"] for l in document_links(links)][:30],
+        "documents": [link["url"] for link in document_links(links)][:30],
     }

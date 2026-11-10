@@ -1,10 +1,8 @@
 """Non-régression des bugs relevés lors de l'analyse de bout en bout."""
 
 import json
-import time
 from email.utils import format_datetime
 from datetime import datetime, timedelta, timezone
-from functools import partial
 from pathlib import Path
 
 import httpx
@@ -222,6 +220,15 @@ def test_retry_after_http_date():
     assert parse_retry_after("30") == 30
 
 
+def test_legacy_ssl_context_for_coleps():
+    import ssl
+
+    from cmrmp.http import legacy_ssl_context
+
+    ctx = legacy_ssl_context()
+    assert ctx.check_hostname is False and ctx.verify_mode == ssl.CERT_NONE
+
+
 # --------------------------------------------------------------------------- collecteurs
 def _patch_client(monkeypatch, module, handler):
     from cmrmp.http import PoliteClient
@@ -273,6 +280,89 @@ def test_minmap_wp_400_ends_pagination(isolated_data, monkeypatch):
     _patch_client(monkeypatch, minmap, handler)
     assert minmap.crawl() == 1
     assert not any("?s=" in p for p in paths)
+
+
+def test_minmap_joomla_finder_fallback(isolated_data, monkeypatch):
+    from cmrmp.sources import minmap
+
+    monkeypatch.setitem(settings()["minmap"], "search_terms", ["exclusion"])
+    monkeypatch.setitem(settings()["minmap"], "finder_url",
+                        "https://minmap.cm/index.php?option=com_finder&view=search&lang=fr")
+    paths = []
+
+    def handler(req):
+        paths.append(str(req.url))
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if "wp-json" in req.url.path:
+            return httpx.Response(200, html="<html>API fermée</html>")
+        if req.url.path == "/index.php" and req.url.params.get("option") == "com_finder":
+            return httpx.Response(200, html='<div class="search-results"><h4 class="result-title">'
+                                            '<a href="/index.php?option=com_content&view=article&id=1">Exclusion</a>'
+                                            "</h4></div>")
+        if req.url.path == "/index.php" and req.url.params.get("option") == "com_content":
+            return httpx.Response(200, html="<html><body><article><p>Exclusion de la commande publique : "
+                                            "ETS ALPHA et BETA BTP</p></article></body></html>")
+        return httpx.Response(404)
+
+    _patch_client(monkeypatch, minmap, handler)
+    assert minmap.crawl() == 1
+    assert any("com_finder" in p for p in paths)
+    recs = storage.read_jsonl(interim("minmap_sanctions_raw.jsonl"))
+    assert recs and recs[0]["url"].endswith("id=1")
+
+
+def test_coleps_http_flow(isolated_data, monkeypatch):
+    from cmrmp.sources import coleps
+
+    form_html = """<html><body><form method="post"
+      action="/pt/notice/movePtNoticeOpt.do;jsessionid=ABC?menuId=PT01010200">
+      <input type="hidden" name="currentPageNo" value="1">
+      <input type="hidden" name="isBack" value="">
+      <input type="hidden" name="seqno" value="">
+      <input type="hidden" name="searchConditions" value="">
+      <input type="text" name="searchKeyword" value="">
+      <select name="searchCategory"><option value="">Tout</option><option value="05">Communiqué</option></select>
+      <select name="searchCondition"><option value="">Tout</option><option value="title">Objet</option></select>
+      <select name="recordCountPerPage"><option value="50" selected>50</option></select>
+    </form></body></html>"""
+    list_html = """<html><body><table class="data">
+      <tr><th>N°</th><th>Catégorie</th><th>Objet</th><th>Date</th><th>Consultations</th><th></th></tr>
+      <tr><td>1</td><td>Communiqué</td><td>Résultat routes</td><td>06/02/2024</td><td>875</td>
+      <td><a href="#" onclick="javascript:fn_selectPtNoticeOpt('26');">Voir</a></td></tr>
+    </table></body></html>"""
+    detail_html = """<html><body><table class="data">
+      <tr><th>Objet</th><td>Résultat routes</td></tr>
+      <tr><th>Classification</th><td>Communiqué</td><th>Date de rédaction</th><td>06/02/2024</td></tr>
+      <tr><th>Nbre de consultations</th><td>875</td></tr>
+      <tr><th>Contenu</th><td>Résultat routes</td></tr>
+      <tr><th>Fichier attaché</th><td><a href="#" onclick="javascript:util_downloadFileByFullPath(
+      &quot;/&quot;, &quot;/EDOCS/attach/portal/NOTICE_OPT/2024/02/06165917503_2.pdf&quot;,
+      &quot;resultat.pdf&quot;);">resultat.pdf</a>
+      <input type="hidden" name="deleteFilePath"
+        value="/EDOCS/attach/portal/NOTICE_OPT/2024/02/06165917503_2.pdf"></td></tr>
+    </table></body></html>"""
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        url = str(req.url)
+        if "movePtNoticeOpt.do" in url:
+            return httpx.Response(200, html=form_html)
+        if "selectListPagePtNoticeOpt.do" in url:
+            return httpx.Response(200, html=list_html)
+        if "selectPtNoticeOpt.do" in url:
+            return httpx.Response(200, html=detail_html)
+        return httpx.Response(404)
+
+    _patch_client(monkeypatch, coleps, handler)
+    assert coleps.crawl_http(max_pages=1) == 1
+    recs = storage.read_jsonl(interim("coleps_items.jsonl"))
+    assert recs and recs[0]["seqno"] == "26" and recs[0]["detail"]["objet"] == "Résultat routes"
+    doc_url = recs[0]["documents"][0]["url"]
+    assert doc_url.startswith("https://www.marchespublics.cm/co/file/downloadFile.do?fullFilePath=")
+    queue = storage.read_jsonl(interim("coleps_documents_queue.jsonl"))
+    assert queue and queue[0]["url"].endswith("realFileName=resultat.pdf")
 
 
 # --------------------------------------------------------------------------- publication

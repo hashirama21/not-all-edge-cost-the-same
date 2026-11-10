@@ -56,7 +56,7 @@ def test_load_sitemap_validates_and_filters(tmp_path):
                      _listing("https://exemple.org/avis")],
     }), encoding="utf-8")
     sm = coleps.load_sitemap(path)
-    assert [l["url"] for l in sm["listings"]] == ["https://www.marchespublics.cm/avis"]
+    assert [link["url"] for link in sm["listings"]] == ["https://www.marchespublics.cm/avis"]
 
 
 def test_pagination_helpers():
