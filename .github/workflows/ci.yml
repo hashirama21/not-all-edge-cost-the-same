@@ -7,27 +7,11 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
       - run: pip install -e ".[dev,hf,llm]"
-      - name: pytest
-        run: |
-          set -o pipefail
-          pytest -q --tb=short 2>&1 | tee pytest_out.txt
-      - name: "Debug : rapport pytest sur la branche ci-debug"
-        if: failure()
-        run: |
-          git fetch origin ci-debug:refs/remotes/origin/ci-debug || true
-          git switch --create ci-debug || git switch ci-debug
-          cp pytest_out.txt "ci-log-$GITHUB_RUN_ID.txt"
-          git add "ci-log-$GITHUB_RUN_ID.txt"
-          git -c user.name=ci-debug -c user.email=ci@localhost commit -m "[skip ci] log pytest $GITHUB_RUN_ID"
-          git push origin ci-debug
+      - run: pytest -q
