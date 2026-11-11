@@ -84,6 +84,11 @@ jobs:
           extra=""
           if [ "${{ matrix.source }}" = "coleps" ]; then extra="--path sitemaps"; fi
           scripts/step.sh "Pull ${{ matrix.source }}" cmrmp hf pull --bucket "$HF_BUCKET" --path "raw/${{ matrix.source }}" --path "interim/${{ matrix.source }}" $extra
+      # Temps réel : un hf watch en arrière-plan renvoie le brut au fil de la collecte
+      # (sync_bucket incrémental, Xet déduplique ; le push final reste la passe de fin).
+      - name: Push temps réel (hf watch en arrière-plan)
+        if: steps.sel.outputs.run == 'true'
+        run: mkdir -p data && nohup cmrmp hf watch --bucket "$HF_BUCKET" --interval-s 900 > data/hf_watch.log 2>&1 &
       # --- COLEPS : carte par l'agent browser-use, sur le modèle local llama.cpp ---------------
       - name: Carte COLEPS à produire ?
         id: map
@@ -143,6 +148,9 @@ jobs:
               if [ -f config/sitemaps/coleps.json ] || [ -f data/sitemaps/coleps.json ]; then $S cmrmp crawl coleps
               else echo "::notice::aucune carte COLEPS : l'agent n'a rien produit (voir l'artefact sitemap-coleps)"; fi ;;
           esac
+          if [ "${{ matrix.source }}" = "katika" ]; then
+            $S cmrmp crawl katika-map   # cartographie du site : filtres, volumes par type et par année
+          fi
       - name: Envoi vers le bucket
         if: always() && steps.sel.outputs.run == 'true'
         run: |

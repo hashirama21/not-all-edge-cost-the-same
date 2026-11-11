@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import typer
+
+from .time import utc_now_iso
 
 app = typer.Typer(add_completion=False, help="Marchés publics camerounais : collecte -> extraction -> graphe -> Hugging Face")
 crawl_app = typer.Typer(help="Collecte par source")
@@ -48,10 +51,21 @@ def discover(url: str):
 
 @crawl_app.command("katika")
 def crawl_katika(years: str = typer.Option(None, help="ex. 2018-2026 ou 2024,2025"),
-                 max_pages: int = typer.Option(None), details: bool = True):
+                 max_pages: int = typer.Option(None), details: bool = True,
+                 rebuild: bool = typer.Option(False, help="reparsage BeautifulSoup des pages de liste déjà capturées")):
     from .sources import katika
 
+    if rebuild:
+        typer.echo(f"{katika.rebuild_items()} items reparsés")
     typer.echo(f"{katika.crawl(_years(years), max_pages, details)} items")
+
+
+@crawl_app.command("katika-map")
+def crawl_katika_map(years: str = typer.Option(None, help="années sondées, ex. 2018-2026")):
+    """Cartographie katika237.com/tender/ : filtres, volumes par type et par année."""
+    from .sources import katika
+
+    typer.echo(json.dumps(katika.cartography(_years(years)), ensure_ascii=False, indent=2))
 
 
 @crawl_app.command("armp-discover")
@@ -283,6 +297,36 @@ def hf_push(bucket: str = typer.Option(...), path: list[str] = typer.Option(None
     from .publish import hf
 
     hf.sync_raw(bucket, direction="up", paths=path or None)
+
+
+@hf_app.command("watch")
+def hf_watch(bucket: str = typer.Option(...),
+             interval_s: int = typer.Option(1200, help="secondes entre deux envois incrémentaux"),
+             path: list[str] = typer.Option(None, help="dossiers à synchroniser (défaut : tout le cache)")):
+    """Envoi en temps réel (run long) : synchronisation incrémentale répétée vers le bucket.
+
+    sync_bucket ne renvoie que les fichiers nouveaux ou modifiés : un push régulier
+    ne re-transfère pas le brut déjà envoyé. Nécessite HF_TOKEN (dans .env ou
+    l'environnement)."""
+    import time as _time
+
+    from .publish import hf
+
+    settings()  # charge .env (HF_TOKEN)
+    if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
+        typer.echo("HF_TOKEN absent : créez un fichier .env avec HF_TOKEN=hf_xxx", err=True)
+        raise typer.Exit(1)
+    paths = path or ["raw", "interim", "text", "llm_cache", "reports", "processed"]
+    n = 0
+    while True:
+        t0 = utc_now_iso("seconds")
+        try:
+            hf.sync_raw(bucket, direction="up", paths=paths)
+            typer.echo(f"{t0} push #{n + 1} ok")
+        except Exception as exc:
+            typer.echo(f"{t0} push échoué : {exc}", err=True)
+        n += 1
+        _time.sleep(interval_s)
 
 
 @dgi_app.command("crawl")

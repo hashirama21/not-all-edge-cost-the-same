@@ -237,7 +237,9 @@ def crawl_publications(types: list[str] | None = None, max_pages: int | None = N
     exercices = cfg.get("exercices") if exercices is None else exercices
     codes = cfg.get("procedure_codes") if codes is None else codes
     search_url = cfg.get("search_url") or f"{cfg['base_url'].rstrip('/')}/recherche_avancee"
-    filtres_url = cfg.get("filtres_url") or f"{cfg['base_url'].rstrip('/')}/filtres_avancee"
+    # filtres_url peut contenir une query de départ : on ne garde que le chemin, les
+    # paramètres (filtre, valeur_filtre) sont toujours reconstruits ci-dessous.
+    filtres_url = (cfg.get("filtres_url") or f"{cfg['base_url'].rstrip('/')}/filtres_avancee").split("?")[0]
     seuil = cfg.get("seuil_marches", 1) if seuil is None else seuil
 
     def ingest(cap, url, page, ctx):

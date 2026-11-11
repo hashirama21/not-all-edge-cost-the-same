@@ -18,7 +18,7 @@ coleps ────┘   par source              (avis, PV, décision, sanction)
 
 | Source | Contenu | Accès | Module |
 | --- | --- | --- | --- |
-| [Katika237](https://katika237.com/tender/) | miroir des avis ARMP (≈ 143 800 entrées), filtres année/région/type | HTML paginé `?page=&r=&type=&y=` | `sources/katika.py` |
+| [Katika237](https://katika237.com/tender/) | miroir des avis ARMP (≈ 143 800 entrées), filtres année/région/type | HTML paginé `?page=&r=&type=&y=` ; parser BeautifulSoup sur les blocs sémantiques `tender-entry` (date, maître d'ouvrage, région, type, montant exact, liens documents) | `sources/katika.py` |
 | [armp.cm](https://www.armp.cm/) | fiches `details?type_publication=DEC-ATTR&id_publication=N` (attributaire, montant, délai) | identifiants séquentiels | `sources/armp.py` |
 | [PRIDESOFT](https://armp.cm/pridesoft) | rapports d'avis `index.php?type_avis=AO&id=N`, documents `/_lib/file/doc/0903/AAAA/MM/JJ/ENTITE/` | identifiants séquentiels | `sources/armp.py` |
 | JDM (ARMP) | Journal des marchés en PDF | **espace abonnés : désactivé par défaut** | `sources/armp.py` |
@@ -87,7 +87,9 @@ sans vision, avec 40 étapes au plus.
 ## Utilisation de bout en bout
 
 ```bash
-cmrmp crawl katika --years 2018-2026
+cmrmp crawl katika --years 2018-2026          # parser BeautifulSoup (repli générique si le site change)
+cmrmp crawl katika --rebuild                  # reparsage des pages de liste déjà capturées (uniformise les items)
+cmrmp crawl katika-map                        # cartographie du site : filtres, volumes par type et par année (data/reports/katika_cartography.json)
 cmrmp crawl armp --types DEC-ATTR
 cmrmp crawl pridesoft --types AO
 cmrmp crawl minmap
@@ -101,6 +103,16 @@ cmrmp build                    # tables, entités, graphe, signaux d'alerte, co�
 cmrmp audit                    # couverture : années, maîtres d'ouvrage, part des marchés avec PV
 cmrmp hf publish --repo utilisateur/cmr-marches-publics --bucket utilisateur/cmr-marches-brut
 ```
+
+Les liens de documents (PDF, DOCX, XLSX…) sont conservés dans les items même après
+téléchargement (`documents` des items Katika/ARMP/COLEPS, file `*_documents_queue.jsonl`,
+brut `raw/docs` avec URL, date de capture et SHA-256). Chaque enregistrement est horodaté
+(`fetched_at`/`fetched_at_utc`). Pendant un run long, `cmrmp hf watch --bucket …
+--interval-s 900` envoie le cache au bucket Hugging Face en continu (`sync_bucket`
+incrémental) ; le workflow `pipeline.yml` le lance en arrière-plan dans chaque tâche de
+collecte. Sur une machine de travail, `scripts/day_run.ps1` enchaîne les mêmes étapes sur
+24 h avec un budget par phase, `scripts/hf_watch.ps1` fait l'envoi temps réel et
+`scripts/katika_update.ps1` met à jour Katika237 dès que sa phase de collecte est finie.
 
 Toutes les étapes sont relançables : une URL déjà capturée n'est pas re-téléchargée, une
 extraction LLM déjà faite n'est pas refacturée.
