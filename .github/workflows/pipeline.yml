@@ -27,7 +27,7 @@ on:
 
 concurrency:
   group: pipeline
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CMRMP_CONTACT: ${{ vars.CMRMP_CONTACT }}
