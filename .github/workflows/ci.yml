@@ -22,7 +22,7 @@ jobs:
         run: |
           set -o pipefail
           pytest -q --tb=short 2>&1 | tee pytest_out.txt
-      - name: Debug : rapport pytest sur la branche ci-debug
+      - name: "Debug : rapport pytest sur la branche ci-debug"
         if: failure()
         run: |
           git fetch origin ci-debug:refs/remotes/origin/ci-debug || true
